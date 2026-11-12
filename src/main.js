@@ -1,7 +1,7 @@
 import { BlackHole } from "./blackhole.js";
 import { PY_SOURCE } from "./code.js";
 
-const FIRST_LINE = 74; // the video starts printing at line 74
+const FIRST_LINE = 170; // pick the program up near its end, so the last line lands around 20s
 const LINE_RATE = 4.3; // lines per second
 const START_LINES = 7;
 

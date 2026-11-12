@@ -5,9 +5,7 @@
 // into an ImageData buffer.
 
 const TAU = Math.PI * 2;
-const CX = 0.05; // the hole sits a little right of the middle
-const CY = 0.1; // and a little high, so the frame reads diagonally
-const TILT = 0.24; // the disk runs down towards the right, up towards the left
+const CY = -0.115; // the hole sits a little below the middle
 const RAMP = " .:-=+<~i!lI?][}{1)(tfjrxnuvcz*#%@";
 
 const INK = [
@@ -230,34 +228,24 @@ export class BlackHole {
 
   shade(x, y, t) {
     const R0 = this.R0;
-    const dx = x - CX;
-    const dy = y - CY;
-    const r = Math.hypot(dx, dy);
-    const ang = Math.atan2(dy, dx);
+    const r = Math.hypot(x, y);
+    const ang = Math.atan2(y, x);
     const rr = r / R0;
 
-    // into the disk's own frame: tilted under the camera
-    const ca = Math.cos(TILT);
-    const sa = Math.sin(TILT);
-    const qx = dx * ca + dy * sa;
-    const qy = -dx * sa + dy * ca;
-    const qang = Math.atan2(qy, qx);
-
     let heat = 0;
-    let belt = 0;
 
     // 1. the first circle, drawn counter-clockwise out of nothing
     if (t < 5.2) {
       const sweep = smooth((t - 0.35) / 2.2) * TAU;
       if (sweep > 0) {
-        let d = (qang - 1.05) % TAU;
+        let d = (ang - 1.05) % TAU;
         if (d < 0) d += TAU;
         if (d <= sweep) {
           const radius = R0 * (1.95 - 0.78 * smooth((t - 0.3) / 2.6));
           const width = 0.007 + 0.005 * smooth((t - 0.3) / 2.0);
           const band = Math.exp(-Math.pow((r - radius) / width, 2));
           const trail = 1 - 0.5 * (d / Math.max(sweep, 1e-3));
-          const spark = 0.7 + 0.3 * Math.sin(qang * 41 - t * 7.5);
+          const spark = 0.7 + 0.3 * Math.sin(ang * 41 - t * 7.5);
           heat += band * trail * spark * (1 - smooth((t - 3.4) / 1.4));
         }
       }
@@ -278,89 +266,64 @@ export class BlackHole {
       heat += hug * hugOn;
     }
 
-    // 3. the body of light wrapping the shadow, piled up on the upper left
+    // 3. the body of light wrapping the shadow
     const bodyOn = smooth((t - 4.8) / 2.6);
     if (bodyOn > 0) {
-      // the cloud's centre sits up and to the left of the hole
-      const br = Math.hypot(dx + 0.46 * R0, dy - 0.3 * R0) / R0;
-      const prof = Math.exp(-Math.pow((br - 1.62) / 0.66, 2));
-      const plane = Math.exp(-Math.pow(qy / (R0 * 1.05), 2));
-      const wide = 0.7 + 0.3 * plane;
-      const swirl = 0.74 + 0.26 * Math.sin(ang * 3 - t * 0.3 + 0.8);
-      const plume = 0.38 + 0.92 * Math.exp(-Math.pow((ang - 2.28) / 0.95, 2));
+      const prof = Math.exp(-Math.pow((rr - 1.58) / 0.62, 2));
+      const plane = Math.exp(-Math.pow(y / (R0 * 1.15), 2));
+      const wide = 0.78 + 0.22 * plane;
+      const swirl = 0.76 + 0.24 * Math.sin(ang * 3 - t * 0.3 + 0.8);
       const cloud = fbm(x * 5.5 + 2.3 + t * 0.03, y * 5.5 - 1.1);
-      // stand back from the shadow so its edge stays readable
-      const clear = smooth((rr - 1.04) / 0.18);
-      heat +=
-        prof * wide * swirl * plume * (0.62 + 0.55 * cloud) * 1.05 * clear * bodyOn;
+      heat += prof * wide * swirl * (0.62 + 0.55 * cloud) * 1.15 * bodyOn;
 
       // the hot lip where the disk crosses in front
-      const low = Math.max(0, -Math.sin(qang));
-      heat += Math.exp(-Math.pow((rr - 1.05) / 0.055, 2)) * low * 0.28 * bodyOn;
+      const low = Math.max(0, -Math.sin(ang));
+      heat += Math.exp(-Math.pow((rr - 1.06) / 0.06, 2)) * low * 0.55 * bodyOn;
     }
 
-    // 4. the disk itself, its near side a little below the shadow
+    // 4. the disk itself
     const grow = smooth((t - 4.7) / 2.7);
     const ignite = smooth((t - 5.2) / 1.7);
     if (grow > 0 && ignite > 0) {
-      const mid = 0.04 * qx - 1.02 * R0;
-      const yy = qy - mid;
+      const mid = 0.05 * x - 0.004;
+      const yy = y - mid;
       const thick =
-        0.062 +
-        0.026 * Math.exp(-Math.pow(qx / 0.3, 2)) -
-        0.014 * Math.min(1, Math.abs(qx) / 0.5);
+        0.072 +
+        0.028 * Math.exp(-Math.pow(x / 0.3, 2)) -
+        0.018 * Math.min(1, Math.abs(x) / 0.5);
       const band = Math.exp(-Math.pow(Math.abs(yy) / thick, 1.8));
       const skirt = Math.exp(-Math.pow(Math.abs(yy) / (thick * 2.4), 2)) * 0.3;
 
       const reach = 0.16 + 0.95 * grow;
-      const edge = smooth((reach - Math.abs(qx)) / 0.16);
-      const beam = 0.6 + 0.65 * Math.exp(-Math.pow((Math.abs(qx) - 0.1) / 0.38, 2));
+      const edge = smooth((reach - Math.abs(x)) / 0.16);
+      const beam = 0.6 + 0.65 * Math.exp(-Math.pow((Math.abs(x) - 0.1) / 0.38, 2));
       const lanes =
         0.92 +
-        0.08 * Math.sin((16 * yy) / thick + 2.1 * Math.sin(qx * 9 - t * 0.45) - t * 0.55);
+        0.08 * Math.sin((16 * yy) / thick + 2.1 * Math.sin(x * 9 - t * 0.45) - t * 0.55);
       const dust =
         0.52 +
-        0.44 * fbm(qx * 9 + t * 0.05, yy * 34 - t * 0.1) +
-        0.2 * fbm(qx * 20 - t * 0.07, yy * 52 + 4);
+        0.44 * fbm(x * 9 + t * 0.05, yy * 34 - t * 0.1) +
+        0.2 * fbm(x * 20 - t * 0.07, yy * 52 + 4);
 
       const flash = Math.exp(-Math.pow((t - 6.3) / 0.7, 2));
       const breathe = 1 + 0.03 * Math.sin(t * 0.35);
       heat +=
         (band + skirt) * edge * beam * lanes * dust * ignite * 0.72 * (1 + flash) * breathe;
-
-      // the thin hot core of the near rim
-      const beltOn = smooth((t - 6.0) / 2.2);
-      const bw = 0.012 + 0.006 * Math.exp(-Math.pow(qx / (0.9 * R0), 2));
-      belt =
-        Math.exp(-Math.pow((yy - 0.015 * R0) / bw, 2)) *
-        Math.exp(-Math.pow(qx / (2.3 * R0), 4)) *
-        beltOn;
-      heat += belt * 0.5;
     }
 
     // 5. the far side, bent up over the top
     const haloOn = smooth((t - 5.9) / 1.5);
     if (haloOn > 0) {
-      const width = 0.05 + 0.022 * Math.min(1.5, Math.abs(qx) / R0);
+      const width = 0.05 + 0.022 * Math.min(1.5, Math.abs(x) / R0);
       let band = Math.exp(-Math.pow((r - R0 * 1.3) / width, 2));
-      const up = smooth((qy / R0 + 0.15) / 1.0);
+      const up = smooth((y / R0 + 0.15) / 1.0);
       band *= 0.26 + 0.74 * up;
-      band *= 0.7 + 0.3 * Math.sin(qang * 5 - t * 0.4);
+      band *= 0.7 + 0.3 * Math.sin(ang * 5 - t * 0.4);
       const flash = Math.exp(-Math.pow((t - 6.6) / 0.9, 2));
       heat += band * haloOn * 1.15 * (1 + 0.4 * flash);
     }
 
-    // 6. the near rim bent under the shadow: the band along its bottom
-    const bandOn = smooth((t - 6.2) / 2.4);
-    if (bandOn > 0) {
-      const rad = 1.095 + 0.018 * Math.sin(qang * 3 - t * 0.35);
-      const low = smooth((-Math.sin(qang) + 0.08) / 0.85);
-      const w = 0.075 + 0.05 * low;
-      heat +=
-        Math.exp(-Math.pow((rr - rad) / w, 2)) * (0.08 + 0.92 * low) * 0.8 * bandOn;
-    }
-
-    // 7. rings thrown outward as it catches
+    // 6. rings thrown outward as it catches
     heat += this.ripple((t - 2.95) / 1.45, rr, 4.6, 1.6);
     heat += this.ripple((t - 6.8) / 1.7, rr, 5.2, 1.0);
     if (t > 13.5) {
@@ -403,7 +366,7 @@ export class BlackHole {
     let letters = 0;
 
     for (let row = 0; row < rows; row++) {
-      const y0 = vy[row];
+      const y0 = vy[row] - CY;
       const py = oy + row * ch;
 
       for (let col = 0; col < cols; col++) {
@@ -412,7 +375,7 @@ export class BlackHole {
         const heat = this.shade(x, y, t);
         const idx = row * cols + col;
         const px = ox + col * cw;
-        const r = Math.hypot(x - CX, y - CY);
+        const r = Math.hypot(x, y);
 
         if (heat >= 0.018) {
           const grain = hash2(col * 1.7 + 0.3, row * 2.3 + 0.1);
@@ -453,8 +416,8 @@ export class BlackHole {
       if (col < 0 || col >= cols || row < 0 || row >= rows) continue;
       if (this.starB[row * cols + col] > 0) continue;
       const x = (ox + (col + 0.5) * cw - W / 2) / H;
-      const y = 0.5 - (oy + (row + 0.5) * ch) / H;
-      if (Math.hypot(x - CX, y - CY) < R0 * 1.05) continue;
+      const y = 0.5 - (oy + (row + 0.5) * ch) / H - CY;
+      if (Math.hypot(x, y) < R0 * 1.05) continue;
       if (this.shade(x, y, t) > 0.02) continue;
       const a = 0.35 + 0.4 * Math.sin(t * e.speed + e.phase);
       if (a < 0.12) continue;
