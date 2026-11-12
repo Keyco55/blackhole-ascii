@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <title>keyco</title>
+    <meta property="og:title" content="keyco" />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="stage">
+      <section class="sky">
+        <canvas id="sky"></canvas>
+        <div class="clock" id="clock">t 00.00s</div>
+      </section>
+
+      <header class="hud">
+        <div class="hud-row handle">@keyco &middot; 2026</div>
+        <div class="hud-row">
+          <span class="k">spin</span> <span class="v" id="spin">0.00</span>
+          <span class="k gap">heat</span> <span class="v" id="heat">0.00</span>
+        </div>
+        <div class="hud-row"><span class="k">letters</span> <span class="v" id="letters">0</span></div>
+        <div class="hud-row prompt-row">
+          <span class="prompt">$ py art.py</span>
+          <span class="status">running &middot; 30 fps</span>
+        </div>
+      </header>
+
+      <section class="console" id="console" aria-hidden="true">
+        <div class="code" id="code"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
