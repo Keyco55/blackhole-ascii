@@ -44,7 +44,7 @@ const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, 
 
 function highlight(src) {
   const re =
-    /(#.*$)|('(?:[^'\\]|\\.)*')|\b(def|return|if|elif|else|for|while|in|not|and|or|import|from|as|class|with|lambda|is|None|True|False|break|continue|try|except)\b|(\b\d+(?:\.\d+)?\b)|([A-Za-z_]\w*)(?=\()/g;
+    /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(def|return|if|elif|else|for|while|in|not|and|or|import|from|as|class|with|lambda|is|None|True|False|break|continue|try|except|finally)\b|(\b\d+(?:\.\d+)?\b)|([A-Za-z_]\w*)(?=\()/g;
   let out = "";
   let last = 0;
   let m;

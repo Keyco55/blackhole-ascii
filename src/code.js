@@ -20,7 +20,10 @@ GAMMA  = 1.35
 R0     = 0.092        # photon sphere, in sky heights
 R_IN   = 1.04 * R0    # inner edge of the disk
 R_HALO = 1.30 * R0    # lensed far side of the disk
-TILT   = 0.055        # the disk sits a little high on the right
+TILT   = 0.240        # the disk runs up towards the left
+CX     = 0.050        # the hole sits off centre
+CY     = 0.100
+PLANE  = -0.34 * R0   # the near side of the disk sits low
 FLASH  = 6.2          # ignition
 
 RAMP = " .:-=+<~i!lI?][}{1)(tfjrxnuvcz*#%@"
@@ -118,7 +121,7 @@ def accretion_disk(t, x, y):
     if grow <= 0.0 or ignite <= 0.0:
         return 0.0
 
-    mid = TILT * x - 0.004
+    mid = 0.04 * x + PLANE
     yy = y - mid
     thick = (0.072 + 0.028 * math.exp(-(x / 0.30) ** 2)
              - 0.018 * min(1.0, abs(x) / 0.50))
@@ -137,6 +140,32 @@ def accretion_disk(t, x, y):
 
     flash = math.exp(-((t - FLASH) / 0.70) ** 2)
     return band * ignite * 1.00 * (1.0 + 1.05 * flash)
+
+
+def belt_line(t, x, y):
+    """the thin hot line of the near rim, under the shadow"""
+    on = smooth((t - 6.0) / 2.2)
+    if on <= 0.0:
+        return 0.0
+
+    yy = y - (0.04 * x + PLANE)
+    wobble = 0.03 * R0 * math.sin(x / (0.75 * R0) + 0.6)
+    width = 0.009 + 0.005 * math.exp(-(x / (0.9 * R0)) ** 2)
+    line = math.exp(-((yy - 0.02 * R0 - wobble) / width) ** 2)
+    return line * math.exp(-(x / (2.3 * R0)) ** 4) * on
+
+
+def underband(t, r, ang):
+    """the near rim bent under the shadow"""
+    on = smooth((t - 6.2) / 2.4)
+    if on <= 0.0:
+        return 0.0
+
+    rr = r / R0
+    rad = 1.075 + 0.018 * math.sin(ang * 3.0 - t * 0.35)
+    low = smooth((-math.sin(ang) + 0.08) / 0.85)
+    width = 0.085 + 0.05 * low
+    return math.exp(-((rr - rad) / width) ** 2) * (0.10 + 0.90 * low) * on
 
 
 def halo_body(t, r, ang, x, y):
@@ -187,16 +216,24 @@ def lensed_halo(t, r, ang, x, y):
 
 def shade(t, col, row, cols, rows, aspect):
     x, y = cell(col, row, cols, rows, aspect)
-    y += 0.115                        # the hole sits below centre
+    x -= CX                           # the hole sits off centre
+    y -= CY
 
     r = math.hypot(x, y)
     ang = math.atan2(y, x)
 
+    # into the disk's own frame, tilted under the camera
+    ct, st = math.cos(TILT), math.sin(TILT)
+    qx = x * ct + y * st
+    qy = -x * st + y * ct
+
     heat = first_circle(t, r, ang)
     heat += photon_ring(t, r)
-    heat += halo_body(t, r, ang, x, y)
-    heat += lensed_halo(t, r, ang, x, y)
-    heat += accretion_disk(t, x, y)
+    heat += halo_body(t, r, ang, qx, qy)
+    heat += lensed_halo(t, r, ang, qx, qy)
+    heat += accretion_disk(t, qx, qy)
+    heat += belt_line(t, qx, qy) * 0.50
+    heat += underband(t, r, ang)
     heat += shockwave(t, r)
 
     heat = 1.0 - math.exp(-1.6 * heat) # roll the highlights off
@@ -257,4 +294,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         sys.stdout.write("\x1b[0m\n")
+    finally:
+        print("나라님께")
 `;
