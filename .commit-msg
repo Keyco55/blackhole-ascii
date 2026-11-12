@@ -1,0 +1,8 @@
+Rework the hole into a glowing body and throw a shockwave as it catches.
+
+The shadow is now wrapped in a filled annulus with a second inner ring, the
+disk is thicker and rolls off instead of clipping, and rings expand outward
+at ignition and periodically after. A closing Korean line sits under the code.
+
+🤖 Generated with Codebuff
+Co-Authored-By: Codebuff <noreply@codebuff.com>

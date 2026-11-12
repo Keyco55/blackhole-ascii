@@ -1,7 +1,8 @@
 // ASCII black hole — procedural renderer.
-// A flat accretion disk seen nearly edge-on, a photon ring, and the
-// lensed far side bent up over the shadow. Every pixel of the picture
-// is a character from a small ink ramp, drawn into an ImageData buffer.
+// A flat accretion disk seen nearly edge-on, a bright body of light
+// wrapping the shadow, and the far side bent up over the top. Every
+// pixel of the picture is a character from a small ink ramp, drawn
+// into an ImageData buffer.
 
 const TAU = Math.PI * 2;
 const CY = -0.115; // the hole sits a little below the middle
@@ -9,18 +10,18 @@ const RAMP = " .:-=+<~i!lI?][}{1)(tfjrxnuvcz*#%@";
 
 const INK = [
   [10, 7, 4],
-  [32, 21, 12],
-  [54, 35, 19],
-  [78, 51, 27],
-  [102, 67, 36],
-  [136, 92, 50],
-  [162, 112, 62],
-  [188, 134, 76],
-  [210, 156, 94],
-  [226, 176, 112],
-  [228, 184, 124],
-  [238, 204, 148],
-  [248, 226, 186],
+  [34, 22, 12],
+  [58, 37, 20],
+  [84, 54, 28],
+  [112, 73, 38],
+  [146, 98, 52],
+  [172, 119, 65],
+  [196, 139, 78],
+  [216, 160, 96],
+  [232, 182, 116],
+  [242, 202, 142],
+  [248, 219, 172],
+  [253, 236, 204],
 ];
 
 const COOL = [126, 126, 108];
@@ -95,10 +96,10 @@ export class BlackHole {
     this.canvas.height = H;
 
     // cell size, in device pixels
-    const targetCols = Math.max(56, Math.min(118, Math.round(rect.width / 3.75)));
+    const targetCols = Math.max(56, Math.min(118, Math.round(rect.width / 3.6)));
     this.cw = Math.max(5, Math.floor(W / targetCols));
     this.cols = Math.max(1, Math.floor(W / this.cw));
-    this.ch = Math.max(8, Math.round(this.cw * 1.62));
+    this.ch = Math.max(8, Math.round(this.cw * 1.6));
     this.rows = Math.max(1, Math.floor(H / this.ch));
     this.ox = Math.floor((W - this.cols * this.cw) / 2);
     this.oy = Math.floor((H - this.rows * this.ch) / 2);
@@ -132,8 +133,8 @@ export class BlackHole {
     off.width = cw;
     off.height = ch;
     const g = off.getContext("2d", { willReadFrequently: true });
-    const size = Math.max(7, Math.round(ch * 0.92));
-    g.font = `600 ${Math.round(ch * 0.99)}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    const size = Math.max(7, Math.round(ch * 0.99));
+    g.font = `700 ${size}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
     g.textAlign = "center";
     g.textBaseline = "middle";
 
@@ -147,7 +148,9 @@ export class BlackHole {
       g.clearRect(0, 0, cw, ch);
       if (c !== " ") {
         g.fillStyle = "#fff";
-        g.fillText(c, cw / 2 + 0.3, ch / 2 + 0.4);
+        // draw twice, a hair apart, so the cells fill like film grain
+        g.fillText(c, cw / 2, ch / 2 + 0.2);
+        g.fillText(c, cw / 2 + 0.5, ch / 2 + 0.6);
       }
       const data = g.getImageData(0, 0, cw, ch).data;
       const mask = new Uint8Array(cw * ch);
@@ -172,9 +175,6 @@ export class BlackHole {
       [lutFor([52, 52, 50]), lutFor([96, 95, 88]), lutFor([150, 147, 138]), lutFor([206, 202, 192])],
       [lutFor([76, 52, 30]), lutFor([118, 80, 44]), lutFor([156, 110, 62]), lutFor([192, 148, 94])],
     ];
-
-    // bright pixel mask used to clear a cell quickly
-    this.clearRow = new Uint32Array(cw).fill(0xff000000);
   }
 
   buildStars() {
@@ -191,11 +191,11 @@ export class BlackHole {
       return seed / 4294967296;
     };
 
-    const count = Math.round(n * 0.015);
+    const count = Math.round(n * 0.019);
     for (let i = 0; i < count; i++) {
       const idx = Math.floor(rnd() * n);
       if (this.starB[idx] > 0) continue;
-      const b = 0.06 + Math.pow(rnd(), 3.0) * 0.68;
+      const b = 0.06 + Math.pow(rnd(), 3.0) * 0.72;
       this.starB[idx] = b;
       this.starTier[idx] = b < 0.26 ? 0 : b < 0.5 ? 1 : 2;
       this.starPhase[idx] = rnd() * TAU;
@@ -217,10 +217,20 @@ export class BlackHole {
     }
   }
 
+  // a thin ring thrown outward, brightest as it leaves
+  ripple(u, rr, reach, strength) {
+    if (u < 0 || u > 1) return 0;
+    const rad = 1.12 + (reach - 1.12) * Math.pow(u, 0.6);
+    const w = 0.14 + 0.09 * u * u;
+    const env = smooth(u * 8) * Math.pow(1 - u, 2.6);
+    return Math.exp(-Math.pow((rr - rad) / w, 2)) * env * strength;
+  }
+
   shade(x, y, t) {
     const R0 = this.R0;
     const r = Math.hypot(x, y);
     const ang = Math.atan2(y, x);
+    const rr = r / R0;
 
     let heat = 0;
 
@@ -241,66 +251,93 @@ export class BlackHole {
       }
     }
 
-    // 2. photon ring around the shadow
-    const ringOn = smooth((t - 2.8) / 1.2);
+    // 2. the rim of the shadow
+    const ringOn = smooth((t - 2.6) / 1.1);
     if (ringOn > 0) {
-      const edge = Math.exp(-Math.pow((r - R0 * 1.03) / 0.0065, 2)) * 1.25;
-      const glow = Math.exp(-Math.pow((r - R0 * 1.07) / 0.016, 2)) * 0.24;
-      heat += (edge + glow) * ringOn;
+      const rim = Math.exp(-Math.pow((rr - 1.02) / 0.014, 2)) * 1.15;
+      const gloss = Math.exp(-Math.pow((rr - 1.1) / 0.05, 2)) * 0.3;
+      heat += (rim + gloss) * ringOn;
 
-      // a soft skirt of light around the ring while it settles
-      const hug = Math.exp(-Math.pow((r - R0 * 1.17) / 0.035, 2)) * 0.55;
+      // a second, finer ring just outside the shadow
+      heat += Math.exp(-Math.pow((rr - 1.19) / 0.035, 2)) * 0.55 * smooth((t - 4.4) / 2.0);
+
+      const hug = Math.exp(-Math.pow((rr - 1.18) / 0.08, 2)) * 0.5;
       const hugOn = smooth((t - 3.2) / 1.4) * (1 - smooth((t - 7.2) / 2.4));
       heat += hug * hugOn;
     }
 
-    // 3. the disk itself
+    // 3. the body of light wrapping the shadow
+    const bodyOn = smooth((t - 4.8) / 2.6);
+    if (bodyOn > 0) {
+      const prof = Math.exp(-Math.pow((rr - 1.58) / 0.62, 2));
+      const plane = Math.exp(-Math.pow(y / (R0 * 1.15), 2));
+      const wide = 0.78 + 0.22 * plane;
+      const swirl = 0.76 + 0.24 * Math.sin(ang * 3 - t * 0.3 + 0.8);
+      const cloud = fbm(x * 5.5 + 2.3 + t * 0.03, y * 5.5 - 1.1);
+      heat += prof * wide * swirl * (0.62 + 0.55 * cloud) * 1.15 * bodyOn;
+
+      // the hot lip where the disk crosses in front
+      const low = Math.max(0, -Math.sin(ang));
+      heat += Math.exp(-Math.pow((rr - 1.06) / 0.06, 2)) * low * 0.55 * bodyOn;
+    }
+
+    // 4. the disk itself
     const grow = smooth((t - 4.7) / 2.7);
     const ignite = smooth((t - 5.2) / 1.7);
     if (grow > 0 && ignite > 0) {
-      const mid = 0.045 * x - 0.004;
+      const mid = 0.05 * x - 0.004;
       const yy = y - mid;
       const thick =
-        0.055 +
-        0.02 * Math.exp(-Math.pow(x / 0.28, 2)) -
-        0.018 * Math.min(1, Math.abs(x) / 0.45);
-      let band = Math.exp(-Math.pow(Math.abs(yy) / thick, 2.4));
+        0.072 +
+        0.028 * Math.exp(-Math.pow(x / 0.3, 2)) -
+        0.018 * Math.min(1, Math.abs(x) / 0.5);
+      const band = Math.exp(-Math.pow(Math.abs(yy) / thick, 1.8));
+      const skirt = Math.exp(-Math.pow(Math.abs(yy) / (thick * 2.4), 2)) * 0.3;
 
-      const reach = 0.1 + 0.86 * grow;
-      band *= smooth((reach - Math.abs(x)) / 0.12);
-      band *= 0.55 + 0.75 * Math.exp(-Math.pow((Math.abs(x) - 0.1) / 0.36, 2));
-
-      const lanes = Math.sin((22 * yy) / thick + 2.1 * Math.sin(x * 9 - t * 0.45) - t * 0.55);
-      band *= 0.88 + 0.14 * lanes;
-
-      const dust = fbm(x * 11 + t * 0.06, yy * 46 - t * 0.1);
-      band *= 0.68 + 0.5 * dust;
-      band = Math.pow(band, 0.92);
+      const reach = 0.16 + 0.95 * grow;
+      const edge = smooth((reach - Math.abs(x)) / 0.16);
+      const beam = 0.6 + 0.65 * Math.exp(-Math.pow((Math.abs(x) - 0.1) / 0.38, 2));
+      const lanes =
+        0.92 +
+        0.08 * Math.sin((16 * yy) / thick + 2.1 * Math.sin(x * 9 - t * 0.45) - t * 0.55);
+      const dust =
+        0.52 +
+        0.44 * fbm(x * 9 + t * 0.05, yy * 34 - t * 0.1) +
+        0.2 * fbm(x * 20 - t * 0.07, yy * 52 + 4);
 
       const flash = Math.exp(-Math.pow((t - 6.3) / 0.7, 2));
       const breathe = 1 + 0.03 * Math.sin(t * 0.35);
-      heat += band * ignite * 1.0 * (1 + 1.05 * flash) * breathe;
+      heat +=
+        (band + skirt) * edge * beam * lanes * dust * ignite * 0.72 * (1 + flash) * breathe;
     }
 
-    // 4. the far side, bent up over the shadow
-    const haloOn = smooth((t - 5.9) / 1.6);
+    // 5. the far side, bent up over the top
+    const haloOn = smooth((t - 5.9) / 1.5);
     if (haloOn > 0) {
-      const width = 0.038 + 0.006 * Math.min(2, Math.abs(x) / R0);
-      let band = Math.exp(-Math.pow((r - R0 * 1.32) / width, 2));
-      const up = smooth((y / R0 + 0.2) / 0.95);
-      band *= 0.32 + 0.68 * up;
-      band *= 0.68 + 0.32 * Math.sin(ang * 6 + t * 0.35);
+      const width = 0.05 + 0.022 * Math.min(1.5, Math.abs(x) / R0);
+      let band = Math.exp(-Math.pow((r - R0 * 1.3) / width, 2));
+      const up = smooth((y / R0 + 0.15) / 1.0);
+      band *= 0.26 + 0.74 * up;
+      band *= 0.7 + 0.3 * Math.sin(ang * 5 - t * 0.4);
       const flash = Math.exp(-Math.pow((t - 6.6) / 0.9, 2));
-      heat += band * haloOn * 1.35 * (1 + 0.45 * flash);
-
-      // light folded between the ring and the arch
-      const fill = Math.exp(-Math.pow((r - R0 * 1.14) / 0.14, 2));
-      const above = smooth((y / R0 + 0.6) / 1.4);
-      const grain = 0.68 + 0.32 * Math.sin(ang * 9 - t * 0.5 + 1.3);
-      heat += fill * above * grain * 0.42 * haloOn;
+      heat += band * haloOn * 1.15 * (1 + 0.4 * flash);
     }
 
-    if (r < R0 * 0.995) heat = 0;
+    // 6. rings thrown outward as it catches
+    heat += this.ripple((t - 2.95) / 1.45, rr, 4.6, 1.6);
+    heat += this.ripple((t - 6.8) / 1.7, rr, 5.2, 1.0);
+    if (t > 13.5) {
+      const u = ((t - 13.5) % 9.5) / 2.6;
+      heat += this.ripple(u, rr, 5.8, 0.5);
+    }
+
+    // the flash of the burst itself
+    heat *= 1 + 0.22 * Math.exp(-Math.pow((t - 2.95) / 0.22, 2));
+
+    // roll the highlights off instead of clipping them flat
+    heat = 1 - Math.exp(-1.6 * heat);
+
+    if (rr < 0.995) heat = 0;
 
     return heat;
   }
@@ -342,12 +379,12 @@ export class BlackHole {
 
         if (heat >= 0.018) {
           const grain = hash2(col * 1.7 + 0.3, row * 2.3 + 0.1);
-          const scaled = Math.pow(clamp01(heat), 1 / 1.25);
+          const scaled = Math.pow(clamp01(heat), 1 / 1.15);
           let level = Math.floor(scaled * (INK.length - 1) + grain * 0.9);
           if (level > INK.length - 1) level = INK.length - 1;
           if (level < 1) level = 1;
 
-          const cool = hash2(col * 3.1 + 7, row * 5.7 + 3) < 0.16 ? 1 : 0;
+          const cool = hash2(col * 3.1 + 7, row * 5.7 + 3) < 0.19 ? 1 : 0;
           const lut = this.inks[level][cool];
           this.blit(this.glyphFor(level, grain), lut, px, py, true);
           letters++;

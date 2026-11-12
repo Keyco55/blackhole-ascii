@@ -120,8 +120,8 @@ def accretion_disk(t, x, y):
 
     mid = TILT * x - 0.004
     yy = y - mid
-    thick = (0.055 + 0.020 * math.exp(-(x / 0.28) ** 2)
-             - 0.018 * min(1.0, abs(x) / 0.45))
+    thick = (0.072 + 0.028 * math.exp(-(x / 0.30) ** 2)
+             - 0.018 * min(1.0, abs(x) / 0.50))
     band = math.exp(-((abs(yy) / thick) ** 2.2))
 
     reach = 0.10 + 0.86 * grow
@@ -139,7 +139,34 @@ def accretion_disk(t, x, y):
     return band * ignite * 1.00 * (1.0 + 1.05 * flash)
 
 
-def lensed_halo(t, r, ang, y):
+def halo_body(t, r, ang, x, y):
+    """the ball of light wrapping the shadow"""
+    on = smooth((t - 4.8) / 2.6)
+    if on <= 0.0:
+        return 0.0
+
+    rr = r / R0
+    prof = math.exp(-((rr - 1.46) / 0.60) ** 2)
+    plane = 0.45 + 0.55 * math.exp(-(y / (R0 * 1.15)) ** 2)
+    swirl = 0.74 + 0.26 * math.sin(ang * 3.0 - t * 0.30 + 0.8)
+    cloud = 0.55 + 0.60 * fbm(x * 5.5 + t * 0.03, y * 5.5)
+    lip = math.exp(-((rr - 1.06) / 0.06) ** 2) * max(0.0, -math.sin(ang)) * 0.55
+    return (prof * plane * swirl * cloud + lip) * on
+
+
+def shockwave(t, r):
+    """a ring thrown outward as the hole catches"""
+    u = (t - 2.95) / 1.45
+    if u < 0.0 or u > 1.0:
+        return 0.0
+
+    rad = R0 * (1.12 + 3.48 * u ** 0.60)
+    width = R0 * (0.07 + 0.10 * u * u)
+    env = smooth(u * 8.0) * (1.0 - u) ** 2.6
+    return math.exp(-((r - rad) / width) ** 2) * env * 1.6
+
+
+def lensed_halo(t, r, ang, x, y):
     """light from the far side, bent up over the shadow"""
     on = smooth((t - 5.9) / 1.6)
     if on <= 0.0:
@@ -167,12 +194,15 @@ def shade(t, col, row, cols, rows, aspect):
 
     heat = first_circle(t, r, ang)
     heat += photon_ring(t, r)
-    heat += lensed_halo(t, r, ang, y)
+    heat += halo_body(t, r, ang, x, y)
+    heat += lensed_halo(t, r, ang, x, y)
     heat += accretion_disk(t, x, y)
+    heat += shockwave(t, r)
 
+    heat = 1.0 - math.exp(-1.6 * heat) # roll the highlights off
     if r < R0 * 0.995:                # the shadow
         heat = 0.0
-    return min(heat, 1.35)
+    return heat
 
 
 def frame(t, cols, rows, aspect):

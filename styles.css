@@ -217,6 +217,29 @@ body {
   }
 }
 
+.farewell {
+  flex: 0 0 auto;
+  padding: 9px 22px calc(13px + env(safe-area-inset-bottom));
+  font-size: 10px;
+  line-height: 1.72;
+  letter-spacing: 0.01em;
+  color: #8f8175;
+  animation: farewell 1.6s ease 1.1s both;
+}
+
+.farewell .sign {
+  color: #b4825a;
+}
+
+@keyframes farewell {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @media (min-width: 620px) {
   .stage {
     max-width: 460px;
