@@ -1,8 +1,10 @@
 // ASCII black hole — procedural renderer.
-// A flat accretion disk seen nearly edge-on, a bright body of light
-// wrapping the shadow, and the far side bent up over the top. Every
-// pixel of the picture is a character from a small ink ramp, drawn
-// into an ImageData buffer.
+// The shadow and the light around it are ray traced: photon paths through
+// the bent space are tabulated once, then every cell asks which parts of
+// the disk its ray crosses. The gas turns with Kepler's law, so the inner
+// edge races while the outer rim crawls, and the far side of the disk is
+// bent up over the shadow. Every pixel of the picture is a character from
+// a small ink ramp, drawn into an ImageData buffer.
 
 const TAU = Math.PI * 2;
 const CY = -0.115; // the hole sits a little below the middle
@@ -26,6 +28,25 @@ const INK = [
 
 const COOL = [126, 126, 108];
 
+// optics: distances in Schwarzschild radii, the camera level with the disk
+const CAM = 30;
+const DISK_IN = 3;
+const DISK_OUT = 9;
+const TILT = 0.15;
+const BMAX = 10;
+const NB = 1600;
+const STEP = 0.022;
+const B_CRIT = (3 * Math.sqrt(3)) / 2;
+
+// gas: rings of noise whose harmonics close after LOOP seconds
+const BANDS = 10;
+const LOOP = 40;
+const SPIN = 6;
+const TAB = 256;
+
+const SUB_X = 2;
+const SUB_Y = 3;
+
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const smooth = (x) => {
   x = clamp01(x);
@@ -37,28 +58,13 @@ function hash2(x, y) {
   return s - Math.floor(s);
 }
 
-function vnoise(x, y) {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const fx = x - ix;
-  const fy = y - iy;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const a = hash2(ix, iy);
-  const b = hash2(ix + 1, iy);
-  const c = hash2(ix, iy + 1);
-  const d = hash2(ix + 1, iy + 1);
-  const top = a + (b - a) * ux;
-  const bot = c + (d - c) * ux;
-  return top + (bot - top) * uy;
-}
-
-function fbm(x, y) {
-  return (
-    0.6 * vnoise(x, y) +
-    0.28 * vnoise(x * 2.3 + 11, y * 2.3 + 7) +
-    0.12 * vnoise(x * 5.1 + 3, y * 5.1 + 9)
-  );
+function mulberry32(a) {
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function lutFor(rgb) {
@@ -71,6 +77,71 @@ function lutFor(rgb) {
     lut[a] = 0xff000000 | (bb << 16) | (gg << 8) | rr;
   }
   return lut;
+}
+
+// A ray stays in a plane through the hole, and its path there depends only
+// on its impact parameter b. In that plane u = 1/r obeys u'' = 1.5u^2 - u
+// in the angle swept from the camera; each path is stepped with RK4 until
+// it falls in or leaves, and kept as u at every step.
+let PATHS = null;
+function paths() {
+  if (PATHS) return PATHS;
+  const f = (u) => 1.5 * u * u - u;
+  const table = [];
+  for (let n = 0; n < NB; n++) {
+    const b = ((n + 0.5) / NB) * BMAX;
+    let u = 1 / CAM;
+    let w = Math.sqrt(Math.max(0, 1 - (b / CAM) ** 2)) / b;
+    const us = [u];
+    let guard = 0;
+    while (u < 1 && (u > 1 / (DISK_OUT + 1) || w > 0) && guard++ < 4000) {
+      const k1 = w;
+      const l1 = f(u);
+      const k2 = w + (STEP / 2) * l1;
+      const l2 = f(u + (STEP / 2) * k1);
+      const k3 = w + (STEP / 2) * l2;
+      const l3 = f(u + (STEP / 2) * k2);
+      const k4 = w + STEP * l3;
+      const l4 = f(u + STEP * k3);
+      u += (STEP / 6) * (k1 + 2 * k2 + 2 * k3 + k4);
+      w += (STEP / 6) * (l1 + 2 * l2 + 2 * l3 + l4);
+      us.push(u);
+    }
+    table.push(Float32Array.from(us));
+  }
+  PATHS = table;
+  return table;
+}
+
+// Each band's gas is a ring of noise: a few whole harmonics, so it closes.
+let BAND_DATA = null;
+function bandData() {
+  if (BAND_DATA) return BAND_DATA;
+  const rand = mulberry32(17);
+  const out = [];
+  for (let b = 0; b < BANDS; b++) {
+    const r = DISK_IN + ((DISK_OUT - DISK_IN) * b) / (BANDS - 1);
+    const turns = Math.max(1, Math.round(SPIN * (DISK_IN / r) ** 1.5));
+    const waves = [2, 3, 5, 8, 13].map((k) => [k, rand() * TAU, (0.5 + rand()) / Math.sqrt(k)]);
+    const tab = new Float32Array(TAB);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < TAB; i++) {
+      let v = 0;
+      for (let j = 0; j < waves.length; j++) {
+        const [k, p, a] = waves[j];
+        v += a * Math.sin((k * TAU * i) / TAB + p);
+      }
+      tab[i] = v;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    // soft, so the thin band reads as wisps rather than static
+    for (let i = 0; i < TAB; i++) tab[i] = 0.76 + (0.24 * (tab[i] - lo)) / (hi - lo);
+    out.push({ tab, turns });
+  }
+  BAND_DATA = out;
+  return out;
 }
 
 export class BlackHole {
@@ -120,6 +191,7 @@ export class BlackHole {
 
     this.buildMasks();
     this.buildStars();
+    this.buildLens();
     this.ctx.putImageData(this.img, 0, 0);
   }
 
@@ -191,7 +263,7 @@ export class BlackHole {
       return seed / 4294967296;
     };
 
-    const count = Math.round(n * 0.019);
+    const count = Math.round(n * 0.021);
     for (let i = 0; i < count; i++) {
       const idx = Math.floor(rnd() * n);
       if (this.starB[idx] > 0) continue;
@@ -217,6 +289,162 @@ export class BlackHole {
     }
   }
 
+  // ---- the lensed image ------------------------------------------------
+  // For every subsample of every cell, find the angles at which its ray
+  // crosses the disk, and keep the radius, azimuth and weight of each
+  // crossing. This never changes with time, so it is done on resize only.
+  buildLens() {
+    const { cols, rows, cw, ch, H, R0, ux, vy } = this;
+    this.S = B_CRIT / (CAM * R0);
+    const S = this.S;
+    const cT = Math.cos(TILT);
+    const sT = Math.sin(TILT);
+    const table = paths();
+    const bands = bandData();
+    const n = cols * rows;
+    const cells = new Array(n);
+    const hasDisk = new Uint8Array(n);
+    const dxW = cw / H;
+    const dyW = ch / H;
+
+    for (let row = 0; row < rows; row++) {
+      const wy = vy[row] - CY;
+      for (let col = 0; col < cols; col++) {
+        const wx = ux[col];
+        const k = row * cols + col;
+        let list = null;
+
+        for (let syi = 0; syi < SUB_Y; syi++) {
+          const y = wy + ((syi + 0.5) / SUB_Y - 0.5) * dyW;
+          for (let sxi = 0; sxi < SUB_X; sxi++) {
+            const x = wx + ((sxi + 0.5) / SUB_X - 0.5) * dxW;
+            const px = x * S;
+            const py = y * S;
+            const len = Math.hypot(px, py, 1);
+            const dx = px / len;
+            const dy = (py * cT - sT) / len;
+            const dz = (py * sT + cT) / len;
+            const out = dy * sT - dz * cT;
+            const side = Math.sqrt(Math.max(0, 1 - out * out));
+            if (side < 1e-4) continue;
+            const e2x = dx / side;
+            const e2y = (dy - out * sT) / side;
+            const e2z = (dz + out * cT) / side;
+
+            const bi = Math.floor((CAM * side * NB) / BMAX);
+            if (bi < 0 || bi >= NB) continue;
+            const us = table[bi];
+
+            // Images that wind more than once round the hole are thinner
+            // than a cell, so they are left out of the sum.
+            const end = Math.min((us.length - 1) * STEP, 5.6);
+            let light = 1;
+            for (let a = (Math.atan2(-sT, e2y) + TAU) % Math.PI; a < end; a += Math.PI) {
+              const p = a / STEP;
+              const q = Math.floor(p);
+              if (q + 1 >= us.length) break;
+              const r = 1 / (us[q] + (us[q + 1] - us[q]) * (p - q));
+              if (!(r > DISK_IN && r < DISK_OUT)) continue;
+
+              const phi = Math.atan2(
+                Math.sin(a) * e2z - Math.cos(a) * cT,
+                Math.sin(a) * e2x,
+              );
+              // bright and thin at the inner edge, gone by the outer one
+              const edge =
+                Math.min(1, (r - DISK_IN) / 0.7) *
+                (DISK_IN / r) ** 1.15 *
+                (1 - smooth((r - 4.3) / 4.7));
+              const doppler = 1 - 0.18 * Math.cos(phi);
+              const pos = ((r - DISK_IN) / (DISK_OUT - DISK_IN)) * (BANDS - 1);
+              const b0 = Math.min(BANDS - 2, Math.floor(pos));
+              if (!list) list = [];
+              list.push(
+                b0,
+                pos - b0,
+                phi,
+                (light * edge * doppler * (DISK_IN / r) ** 1.5) / (SUB_X * SUB_Y),
+              );
+              hasDisk[k] = 1;
+              light *= 0.3; // a crossing seen through the disk is dimmer
+            }
+          }
+        }
+        cells[k] = list;
+      }
+    }
+
+    this.cells = cells;
+    this.hasDisk = hasDisk;
+    this.bands = bands;
+    this.field = new Float32Array(n);
+    this.shown = new Float32Array(n);
+    this.smoothField = new Float32Array(n);
+    this.glow = new Float32Array(n);
+    this.scratch = new Float32Array(n);
+  }
+
+  // The gas turns: each band sweeps its own azimuth, faster near the hole.
+  sampleDisk(t) {
+    const { cells, bands, field } = this;
+    const turn = TAU * ((t % LOOP) / LOOP);
+
+    for (let k = 0; k < field.length; k++) {
+      const h = cells[k];
+      if (!h) {
+        field[k] = 0;
+        continue;
+      }
+      let sum = 0;
+      for (let i = 0; i < h.length; i += 4) {
+        const b0 = h[i];
+        const fr = h[i + 1];
+        const phi = h[i + 2];
+        const b1 = b0 + 1;
+        const t0 = bands[b0];
+        const t1 = bands[b1];
+
+        let a0 = phi - t0.turns * turn;
+        let i0 = Math.floor((a0 / TAU) * TAB) % TAB;
+        if (i0 < 0) i0 += TAB;
+
+        let a1 = phi - t1.turns * turn;
+        let i1 = Math.floor((a1 / TAU) * TAB) % TAB;
+        if (i1 < 0) i1 += TAB;
+
+        const g0 = t0.tab[i0];
+        sum += h[i + 3] * (g0 + (t1.tab[i1] - g0) * fr);
+      }
+      field[k] = sum;
+    }
+  }
+
+  blur(src, dst, radius) {
+    const { cols, rows, scratch } = this;
+    const w = 1 / (radius * 2 + 1);
+    for (let r = 0; r < rows; r++) {
+      const base = r * cols;
+      for (let c = 0; c < cols; c++) {
+        let s = 0;
+        for (let d = -radius; d <= radius; d++) {
+          const cc = c + d;
+          s += src[base + (cc < 0 ? 0 : cc >= cols ? cols - 1 : cc)];
+        }
+        scratch[base + c] = s * w;
+      }
+    }
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        let s = 0;
+        for (let d = -radius; d <= radius; d++) {
+          const rr = r + d;
+          s += scratch[(rr < 0 ? 0 : rr >= rows ? rows - 1 : rr) * cols + c];
+        }
+        dst[r * cols + c] = s * w;
+      }
+    }
+  }
+
   // a thin ring thrown outward, brightest as it leaves
   ripple(u, rr, reach, strength) {
     if (u < 0 || u > 1) return 0;
@@ -226,12 +454,13 @@ export class BlackHole {
     return Math.exp(-Math.pow((rr - rad) / w, 2)) * env * strength;
   }
 
-  shade(x, y, t) {
+  // the choreography: the circle that draws itself, the rim of the shadow,
+  // the rings thrown outward as it catches
+  atmosphere(x, y, t) {
     const R0 = this.R0;
     const r = Math.hypot(x, y);
     const ang = Math.atan2(y, x);
     const rr = r / R0;
-
     let heat = 0;
 
     // 1. the first circle, drawn counter-clockwise out of nothing
@@ -254,76 +483,16 @@ export class BlackHole {
     // 2. the rim of the shadow
     const ringOn = smooth((t - 2.6) / 1.1);
     if (ringOn > 0) {
-      const rim = Math.exp(-Math.pow((rr - 1.02) / 0.014, 2)) * 1.15;
-      const gloss = Math.exp(-Math.pow((rr - 1.1) / 0.05, 2)) * 0.3;
+      // one cell thick, so the ring survives being sampled at cell centres
+      const rim = Math.exp(-Math.pow((rr - 1.03) / 0.05, 2)) * 1.45;
+      const gloss = Math.exp(-Math.pow((rr - 1.12) / 0.07, 2)) * 0.28;
       heat += (rim + gloss) * ringOn;
 
       // a second, finer ring just outside the shadow
-      heat += Math.exp(-Math.pow((rr - 1.19) / 0.035, 2)) * 0.55 * smooth((t - 4.4) / 2.0);
-
-      const hug = Math.exp(-Math.pow((rr - 1.18) / 0.08, 2)) * 0.5;
-      const hugOn = smooth((t - 3.2) / 1.4) * (1 - smooth((t - 7.2) / 2.4));
-      heat += hug * hugOn;
+      heat += Math.exp(-Math.pow((rr - 1.2) / 0.06, 2)) * 0.45 * smooth((t - 4.4) / 2.0);
     }
 
-    // 3. the body of light wrapping the shadow
-    const bodyOn = smooth((t - 4.8) / 2.6);
-    if (bodyOn > 0) {
-      const prof = Math.exp(-Math.pow((rr - 1.58) / 0.62, 2));
-      const plane = Math.exp(-Math.pow(y / (R0 * 1.15), 2));
-      const wide = 0.78 + 0.22 * plane;
-      const swirl = 0.76 + 0.24 * Math.sin(ang * 3 - t * 0.3 + 0.8);
-      const cloud = fbm(x * 5.5 + 2.3 + t * 0.03, y * 5.5 - 1.1);
-      heat += prof * wide * swirl * (0.62 + 0.55 * cloud) * 1.15 * bodyOn;
-
-      // the hot lip where the disk crosses in front
-      const low = Math.max(0, -Math.sin(ang));
-      heat += Math.exp(-Math.pow((rr - 1.06) / 0.06, 2)) * low * 0.55 * bodyOn;
-    }
-
-    // 4. the disk itself
-    const grow = smooth((t - 4.7) / 2.7);
-    const ignite = smooth((t - 5.2) / 1.7);
-    if (grow > 0 && ignite > 0) {
-      const mid = 0.05 * x - 0.004;
-      const yy = y - mid;
-      const thick =
-        0.072 +
-        0.028 * Math.exp(-Math.pow(x / 0.3, 2)) -
-        0.018 * Math.min(1, Math.abs(x) / 0.5);
-      const band = Math.exp(-Math.pow(Math.abs(yy) / thick, 1.8));
-      const skirt = Math.exp(-Math.pow(Math.abs(yy) / (thick * 2.4), 2)) * 0.3;
-
-      const reach = 0.16 + 0.95 * grow;
-      const edge = smooth((reach - Math.abs(x)) / 0.16);
-      const beam = 0.6 + 0.65 * Math.exp(-Math.pow((Math.abs(x) - 0.1) / 0.38, 2));
-      const lanes =
-        0.92 +
-        0.08 * Math.sin((16 * yy) / thick + 2.1 * Math.sin(x * 9 - t * 0.45) - t * 0.55);
-      const dust =
-        0.52 +
-        0.44 * fbm(x * 9 + t * 0.05, yy * 34 - t * 0.1) +
-        0.2 * fbm(x * 20 - t * 0.07, yy * 52 + 4);
-
-      const flash = Math.exp(-Math.pow((t - 6.3) / 0.7, 2));
-      const breathe = 1 + 0.03 * Math.sin(t * 0.35);
-      heat +=
-        (band + skirt) * edge * beam * lanes * dust * ignite * 0.72 * (1 + flash) * breathe;
-    }
-
-    // 5. the far side, bent up over the top
-    const haloOn = smooth((t - 5.9) / 1.5);
-    if (haloOn > 0) {
-      const width = 0.05 + 0.022 * Math.min(1.5, Math.abs(x) / R0);
-      let band = Math.exp(-Math.pow((r - R0 * 1.3) / width, 2));
-      const up = smooth((y / R0 + 0.15) / 1.0);
-      band *= 0.26 + 0.74 * up;
-      band *= 0.7 + 0.3 * Math.sin(ang * 5 - t * 0.4);
-      const flash = Math.exp(-Math.pow((t - 6.6) / 0.9, 2));
-      heat += band * haloOn * 1.15 * (1 + 0.4 * flash);
-    }
-
-    // 6. rings thrown outward as it catches
+    // 3. rings thrown outward as it catches
     heat += this.ripple((t - 2.95) / 1.45, rr, 4.6, 1.6);
     heat += this.ripple((t - 6.8) / 1.7, rr, 5.2, 1.0);
     if (t > 13.5) {
@@ -333,12 +502,6 @@ export class BlackHole {
 
     // the flash of the burst itself
     heat *= 1 + 0.22 * Math.exp(-Math.pow((t - 2.95) / 0.22, 2));
-
-    // roll the highlights off instead of clipping them flat
-    heat = 1 - Math.exp(-1.6 * heat);
-
-    if (rr < 0.995) heat = 0;
-
     return heat;
   }
 
@@ -351,6 +514,7 @@ export class BlackHole {
       if (clear) {
         for (let gx = 0; gx < cw; gx++) buf[base + gx] = 0xff000000;
       }
+      if (!mask) continue;
       for (let gx = 0; gx < cw; gx++) {
         const a = mask[mrow + gx];
         if (a) buf[base + gx] = lut[a];
@@ -359,8 +523,32 @@ export class BlackHole {
   }
 
   draw(t) {
-    const { W, H, cols, rows, cw, ch, ox, oy, buf, ux, vy, R0 } = this;
+    const { cols, rows, cw, ch, ox, oy, buf, ux, vy, R0, field, shown, smoothField, glow } = this;
     buf.fill(0xff000000);
+
+    // the disk catches over a few seconds, from the inside out
+    const diskOn = smooth((t - 4.6) / 2.4);
+    const grow = smooth((t - 4.7) / 2.7);
+    const ignite = smooth((t - 5.0) / 1.5);
+    const reach = 0.14 + 0.95 * grow;
+    const glowOn = smooth((t - 5.2) / 2.2);
+    const flash = 1 + 0.5 * Math.exp(-Math.pow((t - 6.3) / 0.7, 2));
+    const breathe = 1 + 0.03 * Math.sin(t * 0.35);
+
+    this.sampleDisk(t);
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const k = row * cols + col;
+        const x = ux[col];
+        let v = field[k] * diskOn * ignite;
+        if (v > 0) v *= smooth((reach - Math.abs(x)) / 0.15);
+        shown[k] = v;
+      }
+    }
+    // a little smoothing along the band, then a wide glow around it
+    this.blur(shown, smoothField, 1);
+    this.blur(smoothField, glow, 2);
 
     const shadowOn = smooth((t - 2.2) / 1.2);
     let letters = 0;
@@ -372,21 +560,28 @@ export class BlackHole {
       for (let col = 0; col < cols; col++) {
         const x = ux[col];
         const y = y0;
-        const heat = this.shade(x, y, t);
         const idx = row * cols + col;
         const px = ox + col * cw;
         const r = Math.hypot(x, y);
+        const k = idx;
 
-        if (heat >= 0.018) {
+        let heat = this.atmosphere(x, y, t);
+        heat += smoothField[k] * 2.3 * flash * breathe;
+        heat += glow[k] * 0.95 * glowOn;
+
+        // roll the highlights off instead of clipping them flat
+        heat = 1 - Math.exp(-1.6 * heat);
+        if (r < R0 * 0.995) heat = 0;
+
+        if (heat >= 0.03) {
           const grain = hash2(col * 1.7 + 0.3, row * 2.3 + 0.1);
           const scaled = Math.pow(clamp01(heat), 1 / 1.15);
-          let level = Math.floor(scaled * (INK.length - 1) + grain * 0.9);
+          let level = Math.floor(scaled * (INK.length - 1) + grain * 0.35);
           if (level > INK.length - 1) level = INK.length - 1;
-          if (level < 1) level = 1;
+          if (level < 0) level = 0;
 
-          const cool = hash2(col * 3.1 + 7, row * 5.7 + 3) < 0.19 ? 1 : 0;
-          const lut = this.inks[level][cool];
-          this.blit(this.glyphFor(level, grain), lut, px, py, true);
+          const cool = hash2(col * 3.1 + 7, row * 5.7 + 3) < 0.12 ? 1 : 0;
+          this.blit(this.glyphFor(level, grain), this.inks[level][cool], px, py, true);
           letters++;
           continue;
         }
@@ -411,14 +606,14 @@ export class BlackHole {
       const e = this.embers[i];
       const ex = e.x + Math.sin(t * 0.12 + e.phase) * 0.02;
       const ey = e.y + ((t * e.drift + e.phase * 0.1) % 0.7) - 0.35;
-      const col = Math.floor(((ex + W / (2 * H)) / (W / H)) * cols);
+      const col = Math.floor(((ex + this.W / (2 * this.H)) / (this.W / this.H)) * cols);
       const row = Math.floor((0.5 - ey) * rows);
       if (col < 0 || col >= cols || row < 0 || row >= rows) continue;
       if (this.starB[row * cols + col] > 0) continue;
-      const x = (ox + (col + 0.5) * cw - W / 2) / H;
-      const y = 0.5 - (oy + (row + 0.5) * ch) / H - CY;
+      const x = (ox + (col + 0.5) * cw - this.W / 2) / this.H;
+      const y = 0.5 - (oy + (row + 0.5) * ch) / this.H - CY;
       if (Math.hypot(x, y) < R0 * 1.05) continue;
-      if (this.shade(x, y, t) > 0.02) continue;
+      if (this.field[row * cols + col] > 0.02) continue;
       const a = 0.35 + 0.4 * Math.sin(t * e.speed + e.phase);
       if (a < 0.12) continue;
       const lut = this.starInks[1][1];
@@ -433,9 +628,9 @@ export class BlackHole {
     // map ink level to the character ramp, with a little jitter
     const span = this.chars.length - 1;
     let idx = Math.round((level / (INK.length - 1)) * span);
-    if (grain > 0.86) idx += 1;
-    else if (grain < 0.12) idx -= 1;
-    if (idx < 1) idx = 1;
+    if (grain > 0.93) idx += 1;
+    else if (grain < 0.07) idx -= 1;
+    if (idx < 0) idx = 0;
     if (idx > span) idx = span;
     return idx;
   }
