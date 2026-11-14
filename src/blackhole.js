@@ -1,41 +1,54 @@
-// 3D Gargantua ASCII Black Hole — Real-Time Schwarzschild Ray Tracer
+// 3D Gargantua ASCII Black Hole — Real-Time Schwarzschild Ray Tracer + Bloom
 // Precomputes exact RK4 photon geodesics u(a) and asymptotic deflection angles
-// in Schwarzschild spacetime, then traces 3D camera rays every frame with:
-//   - Full 3D orbital camera (cinematic fly-by + interactive drag/zoom)
-//   - Primary, secondary (over/under shadow), and photon-ring disk crossings
-//   - Relativistic Doppler beaming & blackbody temperature color shifts
-//   - Gravitationally lensed 3D starfield & galactic band (real Einstein arcs)
-//   - 3D spiraling accretion embers projected into screen space
+// in Schwarzschild spacetime, then renders every frame with:
+//   - Full 3D orbital camera (16° dynamic tilt + cinematic fly-by + drag/zoom)
+//   - Relativistic Doppler beaming & crimson-amber-whitehot temperature palette
+//   - 3D comet-shaped orbital pulses streaming across disk and lensed halo
+//   - Phase-flowing ASCII glyph pools + directional tangent glyphs (/ | \ -)
+//   - Motion-trail buffer + bilinear pyramid bloom (iOS Safari & desktop safe)
+//   - Gravitationally lensed 3D starfield (Einstein arcs) + 3D spiraling embers
 
 const TAU = Math.PI * 2;
-const RAMP = " .:-=+<~i!lI?][}{1)(tfjrxnuvcz*#%@";
 
-// 18-level blackbody ink ramp (warm amber-gold core)
-const INK_GOLD = [
-  [12, 7, 4],
-  [28, 15, 7],
-  [48, 25, 11],
-  [72, 38, 16],
-  [98, 53, 22],
-  [126, 70, 30],
-  [154, 89, 39],
-  [180, 110, 50],
-  [202, 132, 63],
-  [220, 154, 78],
-  [234, 176, 98],
-  [244, 196, 120],
-  [250, 213, 146],
-  [253, 228, 174],
-  [255, 240, 204],
-  [255, 248, 226],
-  [255, 252, 240],
-  [255, 255, 252],
+// Flowing glyph pools (dark -> bright) + directional tangent glyphs for the ring
+const POOLS = [
+  "1il!;:",
+  "rtfjcvxz=+",
+  "aeoun0{}[]<>",
+  "08B$#&%Q",
+];
+const CHARS = " .,:~+*^/\\|-" + POOLS.join("");
+const AT = new Map(CHARS.split("").map((c, i) => [c, i]));
+const FILL = POOLS.map((pool) =>
+  Array.from({ length: 12 }, (_, k) => AT.get(pool[k % pool.length])),
+);
+
+// 18-level fiery Gargantua luminance ramp (crimson -> orange -> amber -> white-hot)
+const INK_FIRE = [
+  [18, 4, 2],
+  [44, 9, 4],
+  [78, 16, 6],
+  [118, 24, 8],
+  [162, 34, 11],
+  [198, 46, 14],
+  [226, 64, 18],
+  [244, 86, 22],
+  [255, 112, 28],
+  [255, 138, 40],
+  [255, 162, 56],
+  [255, 184, 78],
+  [255, 204, 108],
+  [255, 220, 142],
+  [255, 232, 176],
+  [255, 242, 208],
+  [255, 250, 232],
+  [255, 255, 250],
 ];
 
 // Optics in Schwarzschild units (r_s = 1, photon sphere = 1.5)
 const CAM = 28;
 const DISK_IN = 2.6;
-const DISK_OUT = 12.4;
+const DISK_OUT = 12.6;
 const BMAX = 20.0;
 const NB = 2000;
 const STEP = 0.018;
@@ -46,6 +59,10 @@ const BANDS = 12;
 const LOOP = 42;
 const SPIN = 9;
 const TAB = 256;
+
+const LOG_C1 = Math.log(1.38);
+const LOG_C2 = Math.log(1.92);
+const LOG_C3 = Math.log(2.65);
 
 // 3D sky map resolution
 const SKY_W = 512;
@@ -91,8 +108,15 @@ function lutFor(rgb) {
   return lut;
 }
 
+function makeOffscreen(w, h) {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  return c;
+}
+
 // Precompute Schwarzschild photon geodesics:
-//   us[n]          -> radial inverse 1/r at step index q (a = q * STEP)
+//   usTable[n]     -> 1/r at step index q (a = q * STEP)
 //   escapeAngle[n] -> asymptotic swept angle a_inf where u -> 0 (-1 if captured)
 let GEO = null;
 function geodesics() {
@@ -148,7 +172,7 @@ function geodesics() {
   return GEO;
 }
 
-// Gas harmonics per radial ring (periodic so seams never appear)
+// Gas harmonics per radial ring
 let BAND_DATA = null;
 function bandData() {
   if (BAND_DATA) return BAND_DATA;
@@ -184,7 +208,7 @@ function bandData() {
   return out;
 }
 
-// 3D sky map: crisp pinpoint stars + sparse galactic star clusters on pure void
+// 3D sky map: crisp pinpoint stars on pure void
 let SKY_MAP = null;
 function skyMap() {
   if (SKY_MAP) return SKY_MAP;
@@ -193,7 +217,6 @@ function skyMap() {
   const phase = new Float32Array(SKY_W * SKY_H);
   const rand = mulberry32(20261114);
 
-  // Scatter 2,400 crisp stars across the 3D sphere (denser along an inclined galactic band)
   const tilt = 0.6;
   const nx = Math.sin(tilt) * 0.45;
   const ny = Math.cos(tilt);
@@ -207,7 +230,6 @@ function skyMap() {
     const dy = u;
     const dz = root * Math.sin(phi);
 
-    // Concentrate faint stars slightly toward the galactic plane
     const plane = Math.abs(dx * nx + dy * ny + dz * nz);
     if (s > 1400 && plane > 0.28) continue;
 
@@ -221,7 +243,7 @@ function skyMap() {
     if (bright > val[idx]) {
       val[idx] = bright;
       const cRoll = rand();
-      tint[idx] = cRoll < 0.28 ? 2 : cRoll < 0.64 ? 0 : 1; // 0: cool white, 1: gold, 2: ice blue
+      tint[idx] = cRoll < 0.34 ? 2 : cRoll < 0.68 ? 0 : 1;
       phase[idx] = rand() * TAU;
     }
   }
@@ -251,7 +273,17 @@ export class BlackHole {
     this.geo = geodesics();
     this.bands = bandData();
     this.sky = skyMap();
-    this.rayOut = { near: 0, far: 0, dop: 1, ring: 0, sky: 0, skyTint: 0, hitHorizon: false };
+    this.rayOut = {
+      near: 0,
+      far: 0,
+      dop: 1,
+      ring: 0,
+      sky: 0,
+      skyTint: 0,
+      hitHorizon: false,
+      flowPhase: 0,
+      logR: 0,
+    };
     this.skyOut = { v: 0, tint: 0 };
 
     this.resize();
@@ -296,16 +328,17 @@ export class BlackHole {
     this.canvas.width = W;
     this.canvas.height = H;
 
-    // Cell size in device pixels (crisp high-density ASCII grid)
-    const targetCols = Math.max(64, Math.min(126, Math.round(rect.width / 3.5)));
+    // Bold cell density matching crisp terminal ASCII aesthetic
+    const targetCols = Math.max(66, Math.min(130, Math.round(rect.width / 3.45)));
     this.cw = Math.max(5, Math.floor(W / targetCols));
     this.cols = Math.max(1, Math.floor(W / this.cw));
-    this.ch = Math.max(8, Math.round(this.cw * 1.58));
+    this.ch = Math.max(8, Math.round(this.cw * 1.56));
     this.rows = Math.max(1, Math.floor(H / this.ch));
     this.ox = Math.floor((W - this.cols * this.cw) / 2);
     this.oy = Math.floor((H - this.rows * this.ch) / 2);
 
-    this.R0 = 0.098 * (W / H);
+    // Larger dramatic Gargantua scale
+    this.R0 = 0.112 * (W / H);
     this.ux = new Float32Array(this.cols);
     this.vy = new Float32Array(this.rows);
     for (let c = 0; c < this.cols; c++) {
@@ -329,10 +362,33 @@ export class BlackHole {
     this.skyTintCell = new Uint8Array(n);
     this.ringMap = new Float32Array(n);
     this.shadowMask = new Float32Array(n);
+    this.flowPhaseMap = new Float32Array(n);
+    this.logRMap = new Float32Array(n);
+    this.cellSeed = new Uint8Array(n);
+    for (let k = 0; k < n; k++) {
+      this.cellSeed[k] = Math.floor(hash2(k % this.cols, Math.floor(k / this.cols)) * 12);
+    }
 
     this.img = this.ctx.createImageData(W, H);
     this.buf = new Uint32Array(this.img.data.buffer);
     this.buf.fill(0xff000000);
+
+    // Offscreen compositing buffers for motion trail & 2-tier GPU bloom
+    this.rawCanvas = makeOffscreen(W, H);
+    this.rawCtx = this.rawCanvas.getContext("2d", { alpha: false });
+    this.trailCanvas = makeOffscreen(W, H);
+    this.trailCtx = this.trailCanvas.getContext("2d", { alpha: false });
+    this.trailCtx.fillStyle = "#000";
+    this.trailCtx.fillRect(0, 0, W, H);
+
+    const bw1 = Math.max(16, Math.floor(W / 4));
+    const bh1 = Math.max(16, Math.floor(H / 4));
+    const bw2 = Math.max(12, Math.floor(W / 10));
+    const bh2 = Math.max(12, Math.floor(H / 10));
+    this.bloomA = makeOffscreen(bw1, bh1);
+    this.bloomACtx = this.bloomA.getContext("2d", { alpha: false });
+    this.bloomB = makeOffscreen(bw2, bh2);
+    this.bloomBCtx = this.bloomB.getContext("2d", { alpha: false });
 
     this.buildMasks();
     this.buildEmbers();
@@ -354,18 +410,16 @@ export class BlackHole {
     g.textAlign = "center";
     g.textBaseline = "middle";
 
-    this.chars = RAMP.split("");
-    this.index = new Map();
+    this.chars = CHARS.split("");
     this.masks = [];
 
     for (let i = 0; i < this.chars.length; i++) {
       const c = this.chars[i];
-      this.index.set(c, i);
       g.clearRect(0, 0, cw, ch);
       if (c !== " ") {
         g.fillStyle = "#fff";
         g.fillText(c, cw / 2, ch / 2 + 0.2);
-        g.fillText(c, cw / 2 + 0.5, ch / 2 + 0.6);
+        g.fillText(c, cw / 2 + 0.45, ch / 2 + 0.55);
       }
       const data = g.getImageData(0, 0, cw, ch).data;
       const mask = new Uint8Array(cw * ch);
@@ -374,45 +428,45 @@ export class BlackHole {
     }
 
     // 3 blackbody temperature tints per luminance level:
-    //   0: deep receding amber/copper
-    //   1: incandescent Gargantua gold
+    //   0: deep fiery crimson-red / receding copper
+    //   1: molten orange-amber core -> pale white-hot
     //   2: relativistic Doppler white-gold / ice-blue highlight
     this.inks = [];
-    for (let l = 0; l < INK_GOLD.length; l++) {
-      const base = INK_GOLD[l];
-      const frac = l / (INK_GOLD.length - 1);
+    for (let l = 0; l < INK_FIRE.length; l++) {
+      const base = INK_FIRE[l];
+      const frac = l / (INK_FIRE.length - 1);
 
-      const coolRecede = [
-        clamp(Math.round(base[0] * 1.05), 0, 255),
-        clamp(Math.round(base[1] * 0.72), 0, 255),
-        clamp(Math.round(base[2] * 0.52), 0, 255),
+      const crimsonRecede = [
+        clamp(Math.round(base[0] * 1.04), 0, 255),
+        clamp(Math.round(base[1] * 0.66), 0, 255),
+        clamp(Math.round(base[2] * 0.48), 0, 255),
       ];
-      const hotBlue = [
-        clamp(Math.round(base[0] * 0.92 + frac * 35), 0, 255),
-        clamp(Math.round(base[1] * 0.96 + frac * 42), 0, 255),
-        clamp(Math.round(Math.min(255, base[2] * 1.24 + 46 * frac)), 0, 255),
+      const hotWhiteBlue = [
+        clamp(Math.round(base[0] * 0.94 + frac * 32), 0, 255),
+        clamp(Math.round(base[1] * 0.98 + frac * 42), 0, 255),
+        clamp(Math.round(Math.min(255, base[2] * 1.26 + 55 * frac)), 0, 255),
       ];
-      this.inks.push([lutFor(coolRecede), lutFor(base), lutFor(hotBlue)]);
+      this.inks.push([lutFor(crimsonRecede), lutFor(base), lutFor(hotWhiteBlue)]);
     }
 
-    // Star & nebula inks: [coolWhite, warmGold, iceBlue]
+    // Star & comet dust inks: [coolWhite, warmGold, iceBlue]
     this.starInks = [
-      [lutFor([70, 72, 76]), lutFor([125, 128, 134]), lutFor([185, 190, 198]), lutFor([236, 240, 246])],
-      [lutFor([78, 52, 28]), lutFor([132, 88, 44]), lutFor([186, 134, 72]), lutFor([232, 184, 118])],
-      [lutFor([58, 76, 108]), lutFor([96, 132, 182]), lutFor([146, 186, 232]), lutFor([206, 228, 255])],
+      [lutFor([76, 80, 88]), lutFor([134, 138, 146]), lutFor([196, 202, 212]), lutFor([242, 246, 255])],
+      [lutFor([96, 54, 24]), lutFor([158, 92, 42]), lutFor([218, 142, 72]), lutFor([255, 204, 140])],
+      [lutFor([64, 88, 130]), lutFor([110, 148, 202]), lutFor([164, 202, 244]), lutFor([220, 238, 255])],
     ];
   }
 
   buildEmbers() {
     const rand = mulberry32(20261224);
     this.embers = [];
-    for (let i = 0; i < 64; i++) {
-      const r = 3.2 + rand() * 8.5;
+    for (let i = 0; i < 68; i++) {
+      const r = 3.2 + rand() * 9.0;
       this.embers.push({
         r0: r,
         y0: (rand() - 0.5) * (0.55 + r * 0.14),
         phi0: rand() * TAU,
-        speed: (0.45 + rand() * 0.55) * (DISK_IN / r) ** 1.2,
+        speed: (0.48 + rand() * 0.55) * (DISK_IN / r) ** 1.2,
         phase: rand() * TAU,
         twinkle: 0.4 + rand() * 1.2,
         infall: 0.08 + rand() * 0.22,
@@ -420,7 +474,7 @@ export class BlackHole {
     }
   }
 
-  // Smoothly evolving 3D camera basis (yaw, pitch, roll, zoom)
+  // Smooth 3D orbital camera basis with dramatic ~16° tilted Gargantua framing
   cameraState(t) {
     const nowSec = performance.now() / 1000;
     if (!this.dragging) {
@@ -429,7 +483,6 @@ export class BlackHole {
       this.velYaw *= 0.91;
       this.velPitch *= 0.91;
 
-      // Gently relax user pitch back toward auto-orbit after 7s idle
       const idle = nowSec - this.lastInteract;
       if (idle > 7) {
         this.userPitch *= 0.985;
@@ -437,20 +490,24 @@ export class BlackHole {
       }
     }
 
-    // Cinematic 3D fly-by: begins near edge-on Gargantua silhouette, then orbits in 3D
-    const fly = smooth((t - 4.8) / 3.8);
-    const autoYaw = fly * (0.24 * (t - 4.8) + 0.35 * Math.sin((t - 4.8) * 0.17));
-    const pitchWave = 0.5 - 0.5 * Math.cos((t - 4.8) * 0.22);
-    const autoPitch = 0.075 + fly * (0.04 + 0.36 * pitchWave);
-    const roll = fly * 0.075 * Math.sin((t - 4.8) * 0.19);
-    const autoZoom = 1 + 0.06 * Math.sin(t * 0.23) - 0.08 * smooth((t - 5.2) / 3.5) * (1 - smooth((t - 10.5) / 5.0));
+    // Begins with a bold 16° tilt and near-edge-on Gargantua profile,
+    // then glides smoothly through elevated 3D spiral viewpoints after ignition.
+    const fly = smooth((t - 5.2) / 3.8);
+    const autoYaw = fly * (0.24 * (t - 5.2) + 0.32 * Math.sin((t - 5.2) * 0.17));
+    const pitchWave = 0.5 - 0.5 * Math.cos((t - 5.2) * 0.23);
+    const autoPitch = 0.08 + fly * (0.04 + 0.34 * pitchWave);
+    const baseRoll = 0.275; // ~15.8° dynamic diagonal tilt
+    const roll = baseRoll * (1 - 0.35 * fly) + fly * 0.085 * Math.sin((t - 5.2) * 0.19);
+    const autoZoom =
+      1 +
+      0.06 * Math.sin(t * 0.24) +
+      0.1 * smooth((t - 5.8) / 2.6) * (1 - smooth((t - 12.0) / 5.0));
 
     const yaw = autoYaw + this.userYaw;
     const pitch = clamp(autoPitch + this.userPitch, -1.36, 1.36);
     const zoom = clamp(autoZoom * this.userZoom, 0.55, 2.0);
     this.currentTiltDeg = (pitch * 180) / Math.PI;
 
-    // Camera position unit vector r0 = C / CAM
     const cP = Math.cos(pitch);
     const sP = Math.sin(pitch);
     const cY = Math.cos(yaw);
@@ -460,25 +517,21 @@ export class BlackHole {
     const r0y = sP;
     const r0z = cP * cY;
 
-    // Forward points from camera to black hole origin
     const fx = -r0x;
     const fy = -r0y;
     const fz = -r0z;
 
-    // World up = (0, 1, 0) -> Right = normalize(F x Up)
-    let rx = -fz; // fy*0 - fz*1
+    let rx = -fz;
     let ry = 0;
-    let rz = fx; // fx*1 - fy*0
+    let rz = fx;
     const rLen = Math.hypot(rx, rz) || 1;
     rx /= rLen;
     rz /= rLen;
 
-    // True camera Up = R x F
     const ux0 = ry * fz - rz * fy;
     const uy0 = rz * fx - rx * fz;
     const uz0 = rx * fy - ry * fx;
 
-    // Apply subtle cinematic roll
     const cR = Math.cos(roll);
     const sR = Math.sin(roll);
     const Rx = cR * rx + sR * ux0;
@@ -489,8 +542,7 @@ export class BlackHole {
     const Uy = -sR * ry + cR * uy0;
     const Uz = -sR * rz + cR * uz0;
 
-    // Slightly lower screen center when edge-on so the towering lensed arch shines
-    const cyOffset = -0.055 * Math.cos(pitch * 1.6) * clamp01(1 - Math.abs(pitch) / 0.7);
+    const cyOffset = -0.025 * Math.cos(pitch * 1.4) * clamp01(1 - Math.abs(pitch) / 0.75);
 
     return {
       r0x, r0y, r0z,
@@ -503,13 +555,13 @@ export class BlackHole {
   }
 
   spinPhase(t) {
-    if (t <= 4.4) return t * 0.16;
-    const since = t - 4.4;
-    return 4.4 * 0.16 + since * 1.18 - 2.8 * (1 - Math.exp(-since / 2.8));
+    if (t <= 5.0) return t * 0.16;
+    const since = t - 5.0;
+    return 5.0 * 0.16 + since * 1.24 - 2.6 * (1 - Math.exp(-since / 2.6));
   }
 
   // Trace one 3D ray through Schwarzschild spacetime (writes into this.rayOut)
-  traceRay(x, y, S, cam, ph, turn, knotA, knotB, knotC, pulse, t) {
+  traceRay(x, y, S, cam, ph, turn, pulseOn, t) {
     const out = this.rayOut;
     const px = x * S;
     const py = y * S;
@@ -530,6 +582,7 @@ export class BlackHole {
     if (side < 1e-4) {
       out.near = 0; out.far = 0; out.dop = 1; out.ring = 0;
       out.sky = 0; out.skyTint = 0; out.hitHorizon = true;
+      out.flowPhase = 0; out.logR = 0;
       return out;
     }
 
@@ -542,11 +595,11 @@ export class BlackHole {
     const bi = Math.floor((b / BMAX) * NB);
     const { usTable, escapeAngle } = this.geo;
 
-    // Fast path outside exact table (weak gravity outer starfield)
     if (bi >= NB) {
       const skySample = this.sampleSky(dx, dy, dz, t);
       out.near = 0; out.far = 0; out.dop = 1; out.ring = 0;
       out.sky = skySample.v; out.skyTint = skySample.tint; out.hitHorizon = false;
+      out.flowPhase = 0; out.logR = 0;
       return out;
     }
 
@@ -555,11 +608,13 @@ export class BlackHole {
     const hitHorizon = aEsc < 0;
     const end = (us.length - 1) * STEP;
 
-    // Intersect equatorial accretion disk plane (y = 0): cos(a)*r0y + sin(a)*ty = 0
     let near = 0;
     let far = 0;
     let dopAccum = 0;
     let dopWeight = 0;
+    let domWeight = -1;
+    let domFlowPhase = 0;
+    let domLogR = 0;
 
     let r0y = cam.r0y;
     let t0yC = ty;
@@ -585,8 +640,7 @@ export class BlackHole {
         const hz = ca * cam.r0z + sa * tz;
         const phi = Math.atan2(hz, hx);
 
-        // Relativistic Doppler beaming from 3D gas velocity vs 3D photon direction
-        // Photon tangent from disk toward camera: w * p_hat - u * q_hat
+        // Relativistic Doppler beaming
         const wSlope = (us[q + 1] - us[q]) / STEP;
         const qx = -sa * cam.r0x + ca * tx;
         const qy = -sa * cam.r0y + ca * ty;
@@ -596,20 +650,17 @@ export class BlackHole {
         const kz = wSlope * hz - uVal * qz;
         const kInv = 1 / (Math.hypot(kx, ky, kz) || 1);
 
-        // Gas orbits counter-clockwise in x-z so left side approaches viewer: v_dir = (hz, 0, -hx)
         const vDotK = (hz * kx - hx * kz) * kInv;
         const beta = Math.min(0.48, Math.sqrt(0.48 / Math.max(1.25, r - 1)));
         const gamma = 1 / Math.sqrt(1 - beta * beta);
         const doppler = 1 / (gamma * (1 - beta * vDotK));
-        const beam = Math.pow(doppler, 1.75);
+        const beam = Math.pow(doppler, 1.8);
 
-        // Radial emissivity profile: blazing inner ISCO edge, wide graceful outer fade
         const edge =
-          Math.min(1, (r - DISK_IN) / 0.5) *
-          Math.pow(DISK_IN / r, 1.05) *
-          (1 - smooth((r - 5.8) / 6.6));
+          Math.min(1, (r - DISK_IN) / 0.45) *
+          Math.pow(DISK_IN / r, 1.02) *
+          (1 - smooth((r - 5.8) / 6.8));
 
-        // Sample harmonic gas bands + spiral shear filaments + 3 orbiting knots
         const pos = ((r - DISK_IN) / (DISK_OUT - DISK_IN)) * (BANDS - 1);
         const b0 = Math.min(BANDS - 2, Math.floor(pos));
         const fr = pos - b0;
@@ -622,49 +673,64 @@ export class BlackHole {
         if (i1 < 0) i1 += TAB;
 
         const gas = t0.tab[i0] + (t1.tab[i1] - t0.tab[i0]) * fr;
-        const spiral =
-          1 +
-          0.22 * Math.sin((r - DISK_IN) * 2.4 - ph * 2.1 + phi * 3) +
-          0.12 * Math.sin((r - DISK_IN) * 5.2 + ph * 1.4 - phi * 2);
+        const logR = Math.log(r / DISK_IN);
+        const flowPhase = phi - Math.pow(r / DISK_IN, -1.5) * ph * 1.4;
+        const streak =
+          0.74 +
+          0.26 * Math.sin(36 * logR + 1.1 * Math.sin(flowPhase + 3 * logR)) +
+          0.16 * Math.sin((r - DISK_IN) * 2.4 - ph * 2.2 + phi * 3);
 
-        const da = angDiff(phi, knotA) / 0.34;
-        const db = angDiff(phi, knotB) / 0.44;
-        const dc = angDiff(phi, knotC) / 0.55;
-        const ra = (r - 3.55) / 0.65;
-        const rb = (r - 5.4) / 0.9;
-        const rc = (r - 7.5) / 1.1;
-        const knot =
-          4.4 * Math.exp(-da * da - ra * ra) +
-          3.1 * Math.exp(-db * db - rb * rb) +
-          2.0 * Math.exp(-dc * dc - rc * rc);
+        // 3 comet-shaped relativistic pulses orbiting disk and leaping over lensed halo
+        let cometSum = 0;
+        if (pulseOn > 0.01 && crossings < 2) {
+          let d1 = (phi - (0.0 + 1.15 * t) + Math.PI) % TAU;
+          if (d1 < 0) d1 += TAU;
+          d1 -= Math.PI;
+          const c1 = d1 > 0 ? Math.exp(-Math.pow(d1 / 0.19, 2)) : Math.exp(d1 / 0.95);
+          cometSum += c1 * Math.exp(-Math.pow((logR - LOG_C1) / 0.085, 2));
 
-        const weight = light * edge * beam * Math.pow(DISK_IN / r, 1.35);
-        const val = weight * (gas * spiral + knot * pulse);
+          let d2 = (phi - (2.1 + 0.88 * t) + Math.PI) % TAU;
+          if (d2 < 0) d2 += TAU;
+          d2 -= Math.PI;
+          const c2 = d2 > 0 ? Math.exp(-Math.pow(d2 / 0.21, 2)) : Math.exp(d2 / 0.95);
+          cometSum += c2 * Math.exp(-Math.pow((logR - LOG_C2) / 0.09, 2));
 
-        // Crossings with ca > 0 and first intersection lie between camera and shadow
+          let d3 = (phi - (4.2 + 0.65 * t) + Math.PI) % TAU;
+          if (d3 < 0) d3 += TAU;
+          d3 -= Math.PI;
+          const c3 = d3 > 0 ? Math.exp(-Math.pow(d3 / 0.24, 2)) : Math.exp(d3 / 1.0);
+          cometSum += c3 * Math.exp(-Math.pow((logR - LOG_C3) / 0.1, 2));
+        }
+
+        const weight = light * edge * beam * Math.pow(DISK_IN / r, 1.3);
+        const val = weight * (gas * streak + 2.35 * pulseOn * cometSum);
+
         if (ca > 0 && crossings === 0) near += val;
         else far += val;
 
+        if (val > domWeight) {
+          domWeight = val;
+          domFlowPhase = flowPhase;
+          domLogR = logR;
+        }
         dopAccum += doppler * val;
         dopWeight += val;
-        light *= 0.44;
+        light *= 0.46;
       }
       crossings++;
     }
 
-    // Razor-sharp relativistic photon ring right around b = B_CRIT
+    // Razor-sharp photon ring right around b = B_CRIT
     let ring = 0;
     const bDiff = b - B_CRIT;
     if (bDiff > -0.14 && bDiff < 0.65) {
-      const core = Math.exp(-Math.pow(bDiff / 0.085, 2));
-      const halo = Math.exp(-Math.pow((bDiff - 0.14) / 0.24, 2)) * 0.34;
-      // Photon ring also receives subtle Doppler spin asymmetry
+      const core = Math.exp(-Math.pow(bDiff / 0.08, 2));
+      const halo = Math.exp(-Math.pow((bDiff - 0.14) / 0.24, 2)) * 0.36;
       const ringDir = dx * cam.Rx;
       const ringBias = 1 - 0.28 * clamp(ringDir * 6, -1, 1);
       ring = (core + halo) * ringBias;
     }
 
-    // Gravitationally lensed 3D sky & Einstein ring magnification
     let sky = 0;
     let skyTint = 0;
     if (!hitHorizon) {
@@ -686,6 +752,8 @@ export class BlackHole {
     out.sky = sky;
     out.skyTint = skyTint;
     out.hitHorizon = hitHorizon;
+    out.flowPhase = domFlowPhase;
+    out.logR = domLogR;
     return out;
   }
 
@@ -703,18 +771,14 @@ export class BlackHole {
       return out;
     }
 
-    // Star twinkling vs smooth galactic nebula
-    if (base > 0.16) {
-      const ph = this.sky.phase[idx];
-      const twinkle = 0.62 + 0.38 * Math.sin(t * (1.2 + (idx % 7) * 0.22) + ph);
-      out.v = base * twinkle; out.tint = this.sky.tint[idx];
-      return out;
-    }
-    out.v = base; out.tint = this.sky.tint[idx];
+    const ph = this.sky.phase[idx];
+    const twinkle = 0.62 + 0.38 * Math.sin(t * (1.2 + (idx % 7) * 0.22) + ph);
+    out.v = base * twinkle;
+    out.tint = this.sky.tint[idx];
     return out;
   }
 
-  // Opening choreography + shockwaves + horizon pulse
+  // Opening choreography: counter-clockwise genesis ring, breathing aura, shockwaves
   atmosphere(x, y, t) {
     const R0 = this.R0;
     const r = Math.hypot(x, y);
@@ -722,32 +786,40 @@ export class BlackHole {
     const rr = r / R0;
     let heat = 0;
 
-    // 1. Genesis circle drawn counter-clockwise out of the void
+    // 1. Genesis circle drawn counter-clockwise out of nothing
     if (t < 5.0) {
       const sweep = smooth((t - 0.3) / 2.1) * TAU;
       if (sweep > 0) {
         let d = (ang - 1.05) % TAU;
         if (d < 0) d += TAU;
         if (d <= sweep) {
-          const radius = R0 * (1.98 - 0.82 * smooth((t - 0.25) / 2.5));
+          const radius = R0 * (1.92 - 0.78 * smooth((t - 0.25) / 2.5));
           const width = 0.007 + 0.005 * smooth((t - 0.25) / 2.0);
           const band = Math.exp(-Math.pow((r - radius) / width, 2));
           const trail = 1 - 0.5 * (d / Math.max(sweep, 1e-3));
           const spark = 0.72 + 0.28 * Math.sin(ang * 43 - t * 8.0);
-          heat += band * trail * spark * (1 - smooth((t - 3.3) / 1.4));
+          heat += band * trail * spark * (1 - smooth((t - 3.4) / 1.4));
         }
       }
     }
 
-    // 2. Relativistic shockwaves thrown outward when Gargantua ignites
-    heat += this.ripple((t - 2.85) / 1.45, rr, 4.9, 1.75);
-    heat += this.ripple((t - 6.3) / 1.75, rr, 5.5, 1.15);
-    if (t > 11.5) {
-      const u = ((t - 11.5) % 7.2) / 3.0;
-      heat += this.ripple(u, rr, 6.2, 0.45);
+    // 2. Soft breathing red/amber aura before disk ignition
+    const auraK = smooth((t - 2.0) / 1.7) * (1 - 0.75 * smooth((t - 5.4) / 2.4));
+    if (auraK > 0.01 && rr > 0.98) {
+      const puff = 0.5 + 0.5 * Math.sin(2 * ang + 0.9 * Math.sin(5 * r - 0.5 * t));
+      const reach = 0.38 * (0.7 + 0.6 * puff);
+      heat += auraK * Math.exp(-Math.pow((rr - 1.0) / reach, 1.5)) * (0.55 + 0.45 * puff);
     }
 
-    heat *= 1 + 0.28 * Math.exp(-Math.pow((t - 2.85) / 0.22, 2));
+    // 3. Relativistic shockwaves on ignition
+    heat += this.ripple((t - 2.85) / 1.45, rr, 4.9, 1.75);
+    heat += this.ripple((t - 6.2) / 1.7, rr, 5.8, 1.35);
+    if (t > 11.5) {
+      const u = ((t - 11.5) % 7.2) / 3.0;
+      heat += this.ripple(u, rr, 6.2, 0.5);
+    }
+
+    heat *= 1 + 0.3 * Math.exp(-Math.pow((t - 2.85) / 0.22, 2));
     return heat;
   }
 
@@ -757,6 +829,17 @@ export class BlackHole {
     const w = 0.14 + 0.09 * u * u;
     const env = smooth(u * 8) * Math.pow(1 - u, 2.5);
     return Math.exp(-Math.pow((rr - rad) / w, 2)) * env * strength;
+  }
+
+  // Directional tangent glyph (/ | \ -) along circular arcs
+  tangentGlyph(x, y) {
+    // Tangent vector to circle (x, y) is (-y, x)
+    let deg = ((Math.atan2(-x, -y) * 180) / Math.PI) % 180;
+    if (deg < 0) deg += 180;
+    if (deg < 22.5 || deg >= 157.5) return AT.get("-");
+    if (deg < 67.5) return AT.get("/");
+    if (deg < 112.5) return AT.get("|");
+    return AT.get("\\");
   }
 
   blur(src, dst, radius) {
@@ -802,11 +885,55 @@ export class BlackHole {
     }
   }
 
+  // Composite ASCII buffer with motion trails + 2-tier GPU bilinear bloom
+  compositeBloom() {
+    const { W, H, ctx, rawCtx, rawCanvas, trailCtx, trailCanvas, bloomA, bloomACtx, bloomB, bloomBCtx } = this;
+    if (!rawCtx || typeof ctx.drawImage !== "function") {
+      ctx.putImageData(this.img, 0, 0);
+      return;
+    }
+
+    rawCtx.putImageData(this.img, 0, 0);
+
+    // 1. Motion trail: fade previous frame (~50% retention), then max-blend current crisp frame
+    trailCtx.globalCompositeOperation = "source-over";
+    trailCtx.fillStyle = "rgba(0, 0, 0, 0.50)";
+    trailCtx.fillRect(0, 0, W, H);
+    trailCtx.globalCompositeOperation = "lighten";
+    trailCtx.drawImage(rawCanvas, 0, 0);
+    trailCtx.globalCompositeOperation = "source-over";
+
+    // 2. Bilinear downsampled bloom passes (works natively on iOS Safari & desktop)
+    bloomACtx.imageSmoothingEnabled = true;
+    bloomACtx.clearRect(0, 0, bloomA.width, bloomA.height);
+    bloomACtx.drawImage(trailCanvas, 0, 0, bloomA.width, bloomA.height);
+
+    bloomBCtx.imageSmoothingEnabled = true;
+    bloomBCtx.clearRect(0, 0, bloomB.width, bloomB.height);
+    bloomBCtx.drawImage(bloomA, 0, 0, bloomB.width, bloomB.height);
+
+    // 3. Present sharp trails + tight inner glow + wide outer corona
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.drawImage(trailCanvas, 0, 0);
+
+    ctx.globalCompositeOperation = "lighter";
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 0.42;
+    ctx.drawImage(bloomA, 0, 0, W, H);
+    ctx.globalAlpha = 0.28;
+    ctx.drawImage(bloomB, 0, 0, W, H);
+
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+  }
+
   draw(t) {
     const {
       cols, rows, cw, ch, ox, oy, buf, ux, vy, R0,
       front, back, frontShown, frontSmooth, shown, smoothField, glow,
       dopplerMap, skyHeat, skyTintCell, ringMap, shadowMask,
+      flowPhaseMap, logRMap, cellSeed,
     } = this;
     buf.fill(0xff000000);
 
@@ -815,35 +942,31 @@ export class BlackHole {
 
     const ph = this.spinPhase(t);
     const turn = TAU * ((ph % LOOP) / LOOP);
-    const knotA = ph * 0.72 + 1.1;
-    const knotB = -ph * 0.45 + 3.9;
-    const knotC = ph * 0.28 + 5.2;
-    const pulse = 0.8 + 0.2 * Math.sin(t * 1.25);
 
-    const diskOn = smooth((t - 4.3) / 2.2);
-    const grow = smooth((t - 4.4) / 2.6);
-    const ignite = smooth((t - 4.7) / 1.4);
-    const ringOn = smooth((t - 2.5) / 1.1);
-    const shadowOn = smooth((t - 2.1) / 1.2);
-    const glowOn = smooth((t - 4.9) / 2.0);
-    const flash = 1 + 0.55 * Math.exp(-Math.pow((t - 6.0) / 0.65, 2));
+    const diskOn = smooth((t - 4.2) / 2.2);
+    const grow = smooth((t - 4.3) / 2.6);
+    const ignite = smooth((t - 4.6) / 1.4);
+    const pulseOn = smooth((t - 6.0) / 1.1);
+    const ringOn = smooth((t - 2.3) / 1.1);
+    const shadowOn = smooth((t - 2.0) / 1.2);
+    const glowOn = smooth((t - 4.8) / 2.0);
+    const flash = 1 + 0.72 * Math.exp(-Math.pow((t - 6.1) / 0.55, 2));
     const breathe = 1 + 0.045 * Math.sin(t * 0.38) + 0.02 * Math.sin(t * 0.91 + 1.5);
     const glowPulse = 1 + 0.08 * Math.sin(t * 0.6);
-    const reach = (0.16 + 0.98 * grow) * cam.zoom;
+    const reach = (0.16 + 1.05 * grow) * cam.zoom;
 
     const dxW = cw / this.H;
     const dyW = ch / this.H;
 
-    // 1. Per-frame 3D Schwarzschild geodesic ray tracing
+    // 1. Per-frame 3D Schwarzschild ray tracing
     for (let row = 0; row < rows; row++) {
       const y0 = vy[row] - cam.cyOffset;
       for (let col = 0; col < cols; col++) {
         const x0 = ux[col];
         const k = row * cols + col;
         const rScreen = Math.hypot(x0, y0);
+        const hiDetail = rScreen < R0 * 3.4 * cam.zoom;
 
-        // Adaptive 2x2 supersampling inside the Gargantua disk/photon-ring zone
-        const hiDetail = rScreen < R0 * 5.8 * cam.zoom;
         let near = 0;
         let far = 0;
         let dop = 0;
@@ -851,19 +974,27 @@ export class BlackHole {
         let sky = 0;
         let skyTint = 0;
         let shadowHits = 0;
+        let flowPhase = 0;
+        let logR = 0;
 
         if (hiDetail) {
           let wDop = 0;
+          let maxSeg = -1;
           for (let sy = 0; sy < 2; sy++) {
             const y = y0 + (sy === 0 ? -0.25 : 0.25) * dyW;
             for (let sx = 0; sx < 2; sx++) {
               const x = x0 + (sx === 0 ? -0.25 : 0.25) * dxW;
-              const res = this.traceRay(x, y, S, cam, ph, turn, knotA, knotB, knotC, pulse, t);
+              const res = this.traceRay(x, y, S, cam, ph, turn, pulseOn, t);
               near += res.near * 0.25;
               far += res.far * 0.25;
               const tot = res.near + res.far;
               dop += res.dop * tot;
               wDop += tot;
+              if (tot > maxSeg) {
+                maxSeg = tot;
+                flowPhase = res.flowPhase;
+                logR = res.logR;
+              }
               ring += res.ring * 0.25;
               sky += res.sky * 0.25;
               if (res.sky > 0.12) skyTint = res.skyTint;
@@ -872,7 +1003,7 @@ export class BlackHole {
           }
           dop = wDop > 1e-6 ? dop / wDop : 1.0;
         } else {
-          const res = this.traceRay(x0, y0, S, cam, ph, turn, knotA, knotB, knotC, pulse, t);
+          const res = this.traceRay(x0, y0, S, cam, ph, turn, pulseOn, t);
           near = res.near;
           far = res.far;
           dop = res.dop;
@@ -880,9 +1011,11 @@ export class BlackHole {
           sky = res.sky;
           skyTint = res.skyTint;
           shadowHits = res.hitHorizon ? 1 : 0;
+          flowPhase = res.flowPhase;
+          logR = res.logR;
         }
 
-        const gate = smooth((reach - rScreen * 0.85) / 0.16) * diskOn * ignite;
+        const gate = smooth((reach - rScreen * 0.8) / 0.16) * diskOn * ignite;
         front[k] = near;
         back[k] = far;
         shown[k] = (near + far) * gate;
@@ -892,15 +1025,17 @@ export class BlackHole {
         skyHeat[k] = sky;
         skyTintCell[k] = skyTint;
         shadowMask[k] = shadowHits;
+        flowPhaseMap[k] = flowPhase;
+        logRMap[k] = logR;
       }
     }
 
-    // 2. Screen-space bloom for incandescent accretion gas
+    // 2. Screen-space plasma smoothing & corona
     this.blur(shown, smoothField, 1);
     this.blur(smoothField, glow, 2);
     this.blur(frontShown, frontSmooth, 1);
 
-    // 3. Shade & composite ASCII cells
+    // 3. Shade cells with flowing glyph pools & directional tangent ring letters
     const beat = t > 11.5 ? Math.exp(-Math.pow((((t - 11.5) % 7.2) / 7.2) / 0.08, 2)) : 0;
     let letters = 0;
 
@@ -920,37 +1055,46 @@ export class BlackHole {
 
         let heat =
           (atmos +
-            smoothField[k] * 2.15 * flash * breathe +
-            glow[k] * 1.12 * glowOn * glowPulse) *
+            smoothField[k] * 2.2 * flash * breathe +
+            glow[k] * 1.15 * glowOn * glowPulse) *
             outside +
           photonGlow +
-          frontSmooth[k] * 3.1 * flash * breathe * (1 - outside);
+          frontSmooth[k] * 2.4 * flash * breathe * (1 - outside);
 
-        // Soft rolloff preserves highlights without flat clipping
-        heat = 1 - Math.exp(-1.62 * heat);
+        heat = 1 - Math.exp(-1.68 * heat);
 
-        if (heat >= 0.028) {
+        if (heat >= 0.03) {
           const grain = hash2(col * 1.7 + 0.3, row * 2.3 + 0.1);
-          const scaled = Math.pow(clamp01(heat), 1 / 1.16);
-          let level = Math.floor(scaled * (INK_GOLD.length - 1) + grain * 0.38);
-          if (level >= INK_GOLD.length) level = INK_GOLD.length - 1;
+          const scaled = Math.pow(clamp01(heat), 1 / 1.14);
+          let level = Math.floor(scaled * (INK_FIRE.length - 1) + grain * 0.35);
+          if (level >= INK_FIRE.length) level = INK_FIRE.length - 1;
           if (level < 0) level = 0;
 
-          // Relativistic color temperature:
-          //   dop > 1.12 or peak photon ring -> hot white-gold / ice-blue tint (2)
-          //   dop < 0.88                     -> deep receding copper-amber (0)
-          //   otherwise                      -> classic Gargantua gold (1)
           const dop = dopplerMap[k];
           let tint = 1;
-          if (dop > 1.12 || (photonGlow > 0.65 && heat > 0.6)) tint = 2;
-          else if (dop < 0.89 && level < INK_GOLD.length - 3) tint = 0;
+          if (dop > 1.12 || (photonGlow > 0.65 && heat > 0.58)) tint = 2;
+          else if ((dop < 0.89 || heat < 0.24) && level < INK_FIRE.length - 3) tint = 0;
 
-          this.blit(this.glyphFor(level, grain), this.inks[level][tint], px, py, true);
+          // Directional tangent glyph (/ | \ -) on the sharp ring rim;
+          // flowing glyph pools along the accretion disk
+          const isSharpRing = photonGlow > 0.62 && photonGlow > smoothField[k] * 1.25;
+          const isGenesisArc = t < 4.5 && atmos > 0.48;
+          let glyph;
+          if (isSharpRing || isGenesisArc) {
+            glyph = this.tangentGlyph(x, y0);
+          } else {
+            const tier = clamp(Math.floor(scaled * 3.85), 0, 3);
+            let slot = (cellSeed[k] + Math.floor(flowPhaseMap[k] * 2.2 + logRMap[k] * 6.0)) % 12;
+            if (slot < 0) slot += 12;
+            glyph = FILL[tier][slot];
+          }
+
+          this.blit(glyph, this.inks[level][tint], px, py, true);
           letters++;
           continue;
         }
 
-        // Lensed 3D background stars & galactic nebula (occluded inside event horizon)
+        // Lensed 3D background stars (hidden inside shadow)
         if (shadowMask[k] > 0.45 && shadowOn > 0.4) continue;
         const sv = skyHeat[k];
         if (sv < 0.04) continue;
@@ -959,17 +1103,17 @@ export class BlackHole {
         const lut = this.starInks[skyTintCell[k]][tier];
         const glyph =
           sv < 0.12
-            ? this.index.get(".")
+            ? AT.get(".")
             : sv < 0.32
-              ? this.index.get(":")
+              ? AT.get(":")
               : sv < 0.65
-                ? this.index.get("+")
-                : this.index.get("*");
+                ? AT.get("+")
+                : AT.get("*");
         this.blit(glyph, lut, px, py, false);
       }
     }
 
-    // 4. 3D spiraling relativistic embers projected through camera basis
+    // 4. 3D spiraling relativistic embers
     const tanHalfFov = B_CRIT / (CAM * cam.zoom);
     for (let i = 0; i < this.embers.length; i++) {
       const e = this.embers[i];
@@ -980,7 +1124,6 @@ export class BlackHole {
       const wy = e.y0 * (1 - 0.5 * cycle);
       const wz = r * Math.sin(phi);
 
-      // Relative to camera position C = CAM * r0
       const rx = wx - CAM * cam.r0x;
       const ry = wy - CAM * cam.r0y;
       const rz = wz - CAM * cam.r0z;
@@ -996,29 +1139,18 @@ export class BlackHole {
       if (col < 0 || col >= cols || row < 0 || row >= rows) continue;
 
       const idx = row * cols + col;
-      // Don't draw embers behind the black hole shadow
       if (depth > CAM && shadowMask[idx] > 0.35) continue;
       if (front[idx] + back[idx] > 0.08) continue;
 
       const fade = Math.sin(cycle * Math.PI) * (0.45 + 0.55 * Math.sin(t * e.twinkle + e.phase));
       if (fade < 0.2) continue;
 
-      const glyph = fade > 0.72 ? this.index.get("*") : this.index.get(".");
+      const glyph = fade > 0.72 ? AT.get("*") : AT.get(".");
       const lut = this.starInks[1][fade > 0.65 ? 2 : 1];
       this.blit(glyph, lut, ox + col * cw, oy + row * ch, false);
     }
 
-    this.ctx.putImageData(this.img, 0, 0);
+    this.compositeBloom();
     return letters;
-  }
-
-  glyphFor(level, grain) {
-    const span = this.chars.length - 1;
-    let idx = Math.round((level / (INK_GOLD.length - 1)) * span);
-    if (grain > 0.92) idx += 1;
-    else if (grain < 0.08) idx -= 1;
-    if (idx < 0) idx = 0;
-    if (idx > span) idx = span;
-    return idx;
   }
 }
