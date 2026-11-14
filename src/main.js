@@ -1,8 +1,8 @@
 import { BlackHole } from "./blackhole.js";
 import { PY_SOURCE } from "./code.js";
 
-const FIRST_LINE = 170; // pick the program up near its end, so the last line lands around 20s
-const LINE_RATE = 4.3; // lines per second
+const FIRST_LINE = 141; // pick up inside trace_ray(), so the final print lands around 20s
+const LINE_RATE = 4.3;
 const START_LINES = 7;
 
 const skyEl = document.querySelector(".sky");
@@ -12,9 +12,82 @@ const codeEl = document.getElementById("code");
 const clockEl = document.getElementById("clock");
 const spinEl = document.getElementById("spin");
 const heatEl = document.getElementById("heat");
+const tiltEl = document.getElementById("tilt");
 const lettersEl = document.getElementById("letters");
+const hintEl = document.getElementById("hint");
 
 const bh = new BlackHole(canvas);
+
+/* ------------------------------------------------------------------ */
+/* 3D interactive orbit & zoom                                         */
+/* ------------------------------------------------------------------ */
+
+const pointers = new Map();
+let lastPinchDist = null;
+let lastTapTime = 0;
+
+function hideHint() {
+  if (hintEl && !hintEl.classList.contains("hidden")) {
+    hintEl.classList.add("hidden");
+  }
+}
+
+function pinchDist() {
+  const pts = Array.from(pointers.values());
+  if (pts.length < 2) return null;
+  return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  bh.setDragging(true);
+  hideHint();
+  lastPinchDist = pinchDist();
+
+  const now = performance.now();
+  if (pointers.size === 1 && now - lastTapTime < 280) {
+    bh.resetOrbit();
+  }
+  lastTapTime = now;
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  const dx = e.clientX - prev.x;
+  const dy = e.clientY - prev.y;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (pointers.size === 1) {
+    bh.orbitBy(-dx * 0.0075, dy * 0.0065);
+  } else if (pointers.size === 2) {
+    const dist = pinchDist();
+    if (dist && lastPinchDist) {
+      bh.zoomBy(dist / lastPinchDist);
+    }
+    lastPinchDist = dist;
+  }
+});
+
+function releasePointer(e) {
+  pointers.delete(e.pointerId);
+  lastPinchDist = pinchDist();
+  if (pointers.size === 0) bh.setDragging(false);
+}
+
+canvas.addEventListener("pointerup", releasePointer);
+canvas.addEventListener("pointercancel", releasePointer);
+
+canvas.addEventListener(
+  "wheel",
+  (e) => {
+    e.preventDefault();
+    hideHint();
+    bh.zoomBy(Math.exp(-e.deltaY * 0.0012));
+  },
+  { passive: false },
+);
 
 /* ------------------------------------------------------------------ */
 /* clock                                                               */
@@ -91,19 +164,19 @@ new ResizeObserver(measure).observe(skyEl);
 window.addEventListener("resize", measure);
 
 /* ------------------------------------------------------------------ */
-/* frame loop                                                          */
+/* frame loop (60 fps target)                                          */
 /* ------------------------------------------------------------------ */
 
-const params30 = 1000 / 30;
+const frameStep = 1000 / 62;
 let prev = performance.now();
 let acc = 0;
 
 function tick(now) {
   requestAnimationFrame(tick);
-  acc += Math.min(120, now - prev);
+  acc += Math.min(100, now - prev);
   prev = now;
-  if (acc < params30) return;
-  acc = acc % params30;
+  if (acc < frameStep) return;
+  acc = acc % frameStep;
 
   const t = sceneTime();
   const letters = bh.draw(t);
@@ -124,6 +197,10 @@ function updateHud(t, letters) {
     0.85 * smooth((t - 8) / 6) +
     0.4 * Math.exp(-Math.pow((t - 6.4) / 0.9, 2));
   heatEl.textContent = heat.toFixed(2);
+
+  if (tiltEl) {
+    tiltEl.textContent = `${bh.currentTiltDeg.toFixed(1)}°`;
+  }
 
   lettersEl.textContent = formatLetters(letters);
 }
@@ -164,7 +241,6 @@ function updateCode(t) {
     typedKey = "";
   }
 
-  // the newest line is still being written
   const upto = Math.ceil(frac * source[last].length);
   const srcEl = activeEl.querySelector(".src");
   const key = last + ":" + upto;

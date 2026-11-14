@@ -1,42 +1,35 @@
-// The terminal pane in the video is a running Python renderer.
-// This is the source we print underneath the picture, line by line.
+// The terminal pane is a running 3D Gargantua Python ray-tracer.
+// This is the source printed underneath the picture, line by line.
 
-export const PY_SOURCE = String.raw`# black hole, drawn in characters
+export const PY_SOURCE = String.raw`# gargantua 3d — schwarzschild ray-tracer in characters
 # keyco / 2026
 #
-# 108 x 60 cells, 30 frames a second. the disk is sampled in
-# screen space, lit by a turbulence field, and then quantised
-# down to a small ramp of ink.
+# geodesics u'' = 1.5*u^2 - u are tabulated via rk4, then each
+# frame casts 3d camera rays through bent space with relativistic
+# doppler beaming, lensed background stars, and 3d accretion flow.
 
 import math
 import sys
 import time
 
-COLS   = 108
-ROWS   = 60
-FPS    = 30
-GAMMA  = 1.35
+COLS   = 112
+ROWS   = 62
+FPS    = 60
+GAMMA  = 1.16
 
-R0     = 0.092        # photon sphere, in sky heights
-R_IN   = 1.04 * R0    # inner edge of the disk
-R_HALO = 1.30 * R0    # lensed far side of the disk
-TILT   = 0.055        # the disk sits a little high on the right
-FLASH  = 6.2          # ignition
+CAM      = 28.0
+DISK_IN  = 2.60       # inner isco edge, in schwarzschild radii
+DISK_OUT = 10.60
+B_CRIT   = 3.0 * math.sqrt(3.0) / 2.0
+STEP     = 0.018
 
 RAMP = " .:-=+<~i!lI?][}{1)(tfjrxnuvcz*#%@"
-INK = (
-    ( 10,   7,   4), ( 32,  21,  12), ( 54,  35,  19),
-    ( 78,  51,  27), (102,  67,  36), (126,  84,  46),
-    (150, 102,  56), (174, 122,  69), (196, 143,  84),
-    (214, 163, 102), (228, 184, 124), (238, 204, 148),
-    (248, 226, 186),
-)
 PAPER = "\x1b[48;2;0;0;0m"
 HOME  = "\x1b[H"
 
 
-def clamp(x):
-    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+def clamp(x, lo=0.0, hi=1.0):
+    return lo if x < lo else hi if x > hi else x
 
 
 def smooth(x):
@@ -44,189 +37,165 @@ def smooth(x):
     return x * x * (3.0 - 2.0 * x)
 
 
-def fract(x):
-    return x - math.floor(x)
+def norm3(x, y, z):
+    inv = 1.0 / max(1e-9, math.hypot(x, y, z))
+    return x * inv, y * inv, z * inv
 
 
-def hash2(x, y):
-    return fract(math.sin(x * 127.1 + y * 311.7) * 43758.5453)
+def trace_geodesic(b):
+    """integrate photon orbit u'' = 1.5*u^2 - u via rk4"""
+    u = 1.0 / CAM
+    w = math.sqrt(max(0.0, 1.0 - (b / CAM) ** 2)) / b
+    path = [u]
+    for step in range(2400):
+        f = lambda uu: 1.5 * uu * uu - uu
+        k1, l1 = w, f(u)
+        k2, l2 = w + 0.5 * STEP * l1, f(u + 0.5 * STEP * k1)
+        k3, l3 = w + 0.5 * STEP * l2, f(u + 0.5 * STEP * k2)
+        k4, l4 = w + STEP * l3, f(u + STEP * k3)
+        u_next = u + (STEP / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        w_next = w + (STEP / 6.0) * (l1 + 2.0 * l2 + 2.0 * l3 + l4)
+        if u_next >= 1.0:
+            return path, -1.0
+        if u_next <= 0.0 and w_next < 0.0:
+            frac = u / max(1e-9, u - u_next)
+            return path, (step + frac) * STEP
+        u, w = u_next, w_next
+        if u >= 0.04 or w > 0.0:
+            path.append(u)
+    return path, -1.0
 
 
-def noise(x, y):
-    """value noise - cheap, and smooth enough for a galaxy"""
-    ix, iy = math.floor(x), math.floor(y)
-    fx, fy = x - ix, y - iy
-    ux = fx * fx * (3.0 - 2.0 * fx)
-    uy = fy * fy * (3.0 - 2.0 * fy)
-    a = hash2(ix, iy)
-    b = hash2(ix + 1, iy)
-    c = hash2(ix, iy + 1)
-    d = hash2(ix + 1, iy + 1)
-    top = a + (b - a) * ux
-    bot = c + (d - c) * ux
-    return top + (bot - top) * uy
+def camera_basis(t):
+    """cinematic 3d fly-by orbiting gargantua"""
+    fly = smooth((t - 4.8) / 3.8)
+    yaw = fly * (0.24 * (t - 4.8) + 0.35 * math.sin((t - 4.8) * 0.17))
+    pitch = 0.075 + fly * (0.04 + 0.36 * (0.5 - 0.5 * math.cos((t - 4.8) * 0.22)))
+    roll = fly * 0.075 * math.sin((t - 4.8) * 0.19)
+
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    r0 = (cp * sy, sp, cp * cy)
+    fwd = (-r0[0], -r0[1], -r0[2])
+    right0 = norm3(-fwd[2], 0.0, fwd[0])
+    up0 = (
+        right0[1] * fwd[2] - right0[2] * fwd[1],
+        right0[2] * fwd[0] - right0[0] * fwd[2],
+        right0[0] * fwd[1] - right0[1] * fwd[0],
+    )
+    cr, sr = math.cos(roll), math.sin(roll)
+    right = tuple(cr * right0[i] + sr * up0[i] for i in range(3))
+    up = tuple(-sr * right0[i] + cr * up0[i] for i in range(3))
+    return r0, fwd, right, up
 
 
-def fbm(x, y):
-    return (0.60 * noise(x, y) +
-            0.28 * noise(x * 2.3 + 11.0, y * 2.3 + 7.0) +
-            0.12 * noise(x * 5.1 + 3.0, y * 5.1 + 9.0))
+def doppler_beam(r, hx, hz, qx, qy, qz, u_val, w_slope):
+    """relativistic beaming: approaching limb shines white-gold"""
+    kx = w_slope * hx - u_val * qx
+    ky = -u_val * qy
+    kz = w_slope * hz - u_val * qz
+    inv = 1.0 / max(1e-9, math.hypot(kx, ky, kz))
+    v_dot_k = (hz * kx - hx * kz) * inv
+    beta = min(0.56, math.sqrt(0.55 / max(1.15, r - 1.0)))
+    gamma = 1.0 / math.sqrt(1.0 - beta * beta)
+    doppler = 1.0 / (gamma * (1.0 - beta * v_dot_k))
+    return doppler ** 2.15
 
 
-def spin(t):
-    return 0.30 + 0.34 * max(0.0, t - 6.5) + 0.10 * smooth((t - 4.2) / 1.8)
+def spin_phase(t):
+    if t <= 4.4:
+        return t * 0.16
+    since = t - 4.4
+    return 4.4 * 0.16 + since * 1.18 - 2.8 * (1.0 - math.exp(-since / 2.8))
 
 
-def cell(col, row, cols, rows, aspect):
-    u = (col + 0.5) / cols - 0.5
-    v = 0.5 - (row + 0.5) / rows
-    return u * aspect, v
+def disk_turbulence(r, phi, ph):
+    """keplerian spiral shear filaments and orbiting hot knots"""
+    omega = 9.0 * (DISK_IN / r) ** 1.5
+    phase = phi - omega * ph * 0.15
+    wisp = 0.72 + 0.28 * math.sin(phase * 3.0 + r * 1.9)
+    spiral = 1.0 + 0.22 * math.sin((r - DISK_IN) * 2.4 - ph * 2.1 + phi * 3.0)
+    knot_a = math.exp(-((phi - (ph * 0.72 + 1.1)) % 6.28 / 0.34) ** 2 - ((r - 3.55) / 0.65) ** 2)
+    knot_b = math.exp(-((phi - (-ph * 0.45 + 3.9)) % 6.28 / 0.44) ** 2 - ((r - 5.40) / 0.90) ** 2)
+    return wisp * spiral + 4.4 * knot_a + 3.1 * knot_b
 
 
-def first_circle(t, r, ang):
-    """the first circle, drawn counter-clockwise out of nothing"""
-    sweep = smooth((t - 0.35) / 2.2) * 6.283185
-    if sweep <= 0.0:
+def trace_ray(x, y, fov, cam, table, t):
+    r0, fwd, right, up = cam
+    dx, dy, dz = norm3(
+        x * fov * right[0] + y * fov * up[0] + fwd[0],
+        x * fov * right[1] + y * fov * up[1] + fwd[1],
+        x * fov * right[2] + y * fov * up[2] + fwd[2],
+    )
+    dr = dx * r0[0] + dy * r0[1] + dz * r0[2]
+    tx, ty, tz = dx - dr * r0[0], dy - dr * r0[1], dz - dr * r0[2]
+    side = math.hypot(tx, ty, tz)
+    if side < 1e-4:
         return 0.0
 
-    d = (ang - 1.05) % 6.283185
-    if d > sweep:
-        return 0.0
+    tx, ty, tz = tx / side, ty / side, tz / side
+    b = CAM * side
+    us, a_esc = table(b)
+    end = (len(us) - 1) * STEP
 
-    radius = R0 * (1.95 - 0.78 * smooth((t - 0.30) / 2.60))
-    width = 0.007 + 0.005 * smooth((t - 0.30) / 2.0)
-    band = math.exp(-((r - radius) / width) ** 2)
+    a0 = math.atan2(-r0[1], ty) % math.pi
+    heat, light, ph = 0.0, 1.0, spin_phase(t)
 
-    trail = 1.0 - 0.50 * (d / max(sweep, 1e-3))
-    spark = 0.70 + 0.30 * math.sin(ang * 41.0 - t * 7.5)
-    return band * trail * spark * (1.0 - smooth((t - 3.4) / 1.4))
+    for k in range(3):
+        a = a0 + k * math.pi
+        if a >= end:
+            break
+        q = int(a / STEP)
+        if q + 1 >= len(us):
+            break
+        u_val = us[q] + (us[q + 1] - us[q]) * (a / STEP - q)
+        if u_val <= 0.04:
+            continue
+        r = 1.0 / u_val
+        if DISK_IN < r < DISK_OUT:
+            ca, sa = math.cos(a), math.sin(a)
+            hx, hz = ca * r0[0] + sa * tx, ca * r0[2] + sa * tz
+            phi = math.atan2(hz, hx)
+            qx, qy, qz = -sa * r0[0] + ca * tx, -sa * r0[1] + ca * ty, -sa * r0[2] + ca * tz
+            beam = doppler_beam(r, hx, hz, qx, qy, qz, u_val, (us[q + 1] - us[q]) / STEP)
+            edge = min(1.0, (r - DISK_IN) / 0.55) * (DISK_IN / r) ** 1.25
+            heat += light * edge * beam * disk_turbulence(r, phi, ph)
+            light *= 0.44
 
-
-def photon_ring(t, r):
-    """the thin bright edge of the shadow"""
-    edge = math.exp(-((r - R0 * 1.025) / 0.0055) ** 2)
-    glow = math.exp(-((r - R0 * 1.065) / 0.020) ** 2) * 0.30
-    hug = math.exp(-((r - R0 * 1.17) / 0.035) ** 2) * 0.55
-    hug *= smooth((t - 3.2) / 1.4) * (1.0 - smooth((t - 7.2) / 2.4))
-    return (edge + glow) * smooth((t - 2.8) / 1.2) + hug
-
-
-def accretion_disk(t, x, y):
-    """the flat thing we are looking at almost edge on"""
-    grow = smooth((t - 4.7) / 2.7)
-    ignite = smooth((t - 5.2) / 1.7)
-    if grow <= 0.0 or ignite <= 0.0:
-        return 0.0
-
-    mid = TILT * x - 0.004
-    yy = y - mid
-    thick = (0.072 + 0.028 * math.exp(-(x / 0.30) ** 2)
-             - 0.018 * min(1.0, abs(x) / 0.50))
-    band = math.exp(-((abs(yy) / thick) ** 2.2))
-
-    reach = 0.10 + 0.86 * grow
-    band *= smooth((reach - abs(x)) / 0.12)
-    band *= 0.55 + 0.75 * math.exp(-((abs(x) - 0.10) / 0.36) ** 2)
-
-    lanes = math.sin(19.0 * yy / thick +
-                     2.1 * math.sin(x * 9.0 - t * 0.45) - t * 0.55)
-    band *= 0.88 + 0.14 * lanes
-
-    dust = fbm(x * 7.0 + t * 0.05, yy * 24.0 - t * 0.10)
-    band *= 0.68 + 0.50 * dust
-
-    flash = math.exp(-((t - FLASH) / 0.70) ** 2)
-    return band * ignite * 1.00 * (1.0 + 1.05 * flash)
+    # photon ring & gravitational lensing of background stars
+    ring = math.exp(-((b - B_CRIT) / 0.085) ** 2) * 1.65 * smooth((t - 2.5) / 1.1)
+    if a_esc < 0.0:
+        return heat
+    return heat + ring
 
 
-def halo_body(t, r, ang, x, y):
-    """the ball of light wrapping the shadow"""
-    on = smooth((t - 4.8) / 2.6)
-    if on <= 0.0:
-        return 0.0
-
-    rr = r / R0
-    prof = math.exp(-((rr - 1.46) / 0.60) ** 2)
-    plane = 0.45 + 0.55 * math.exp(-(y / (R0 * 1.15)) ** 2)
-    swirl = 0.74 + 0.26 * math.sin(ang * 3.0 - t * 0.30 + 0.8)
-    cloud = 0.55 + 0.60 * fbm(x * 5.5 + t * 0.03, y * 5.5)
-    lip = math.exp(-((rr - 1.06) / 0.06) ** 2) * max(0.0, -math.sin(ang)) * 0.55
-    return (prof * plane * swirl * cloud + lip) * on
-
-
-def shockwave(t, r):
-    """a ring thrown outward as the hole catches"""
-    u = (t - 2.95) / 1.45
-    if u < 0.0 or u > 1.0:
-        return 0.0
-
-    rad = R0 * (1.12 + 3.48 * u ** 0.60)
-    width = R0 * (0.07 + 0.10 * u * u)
-    env = smooth(u * 8.0) * (1.0 - u) ** 2.6
-    return math.exp(-((r - rad) / width) ** 2) * env * 1.6
-
-
-def lensed_halo(t, r, ang, x, y):
-    """light from the far side, bent up over the shadow"""
-    on = smooth((t - 5.9) / 1.6)
-    if on <= 0.0:
-        return 0.0
-
-    width = 0.038 + 0.006 * min(2.0, abs(x) / R0)
-    band = math.exp(-((r - R_HALO) / width) ** 2)
-    up = smooth((y / R0 + 0.35) / 1.10)
-    band *= 0.30 + 0.70 * up
-    band *= 0.74 + 0.26 * math.sin(ang * 6.0 + t * 0.35)
-
-    flash = math.exp(-((t - 6.6) / 0.9) ** 2)
-    fill = math.exp(-((r - R0 * 1.14) / 0.14) ** 2)
-    above = smooth((y / R0 + 0.6) / 1.4)
-    band += fill * above * 0.42
-    return band * on * (1.35 + 0.45 * flash)
-
-
-def shade(t, col, row, cols, rows, aspect):
-    x, y = cell(col, row, cols, rows, aspect)
-    y += 0.115                        # the hole sits below centre
-
-    r = math.hypot(x, y)
-    ang = math.atan2(y, x)
-
-    heat = first_circle(t, r, ang)
-    heat += photon_ring(t, r)
-    heat += halo_body(t, r, ang, x, y)
-    heat += lensed_halo(t, r, ang, x, y)
-    heat += accretion_disk(t, x, y)
-    heat += shockwave(t, r)
-
-    heat = 1.0 - math.exp(-1.6 * heat) # roll the highlights off
-    if r < R0 * 0.995:                # the shadow
-        heat = 0.0
-    return heat
-
-
-def frame(t, cols, rows, aspect):
+def frame(t, cols, rows, aspect, table):
+    cam = camera_basis(t)
+    fov = B_CRIT / (CAM * 0.098 * aspect)
+    ignite = smooth((t - 4.7) / 1.4)
     chars = []
+
     for row in range(rows):
+        y = 0.5 - (row + 0.5) / rows
         line = []
         for col in range(cols):
-            heat = shade(t, col, row, cols, rows, aspect)
-            if heat < 0.012:
+            x = ((col + 0.5) / cols - 0.5) * aspect
+            heat = 1.0 - math.exp(-1.62 * trace_ray(x, y, fov, cam, table, t) * ignite)
+            if heat < 0.028:
                 line.append(" ")
                 continue
-            grain = hash2(col * 1.7 + 0.3, row * 2.3 + 0.1)
             scaled = clamp(heat) ** (1.0 / GAMMA)
-            level = int(scaled * (len(RAMP) - 1) + grain * 0.85)
-            line.append(RAMP[min(level, len(RAMP) - 1)])
+            idx = min(int(scaled * (len(RAMP) - 1)), len(RAMP) - 1)
+            line.append(RAMP[idx])
         chars.append(line)
     return chars
 
 
 def hud(t, chars):
-    """the small print under the picture"""
     letters = sum(1 for row in chars for c in row if c != " ")
     heat = 0.86 + 0.75 * smooth((t - 4.0) / 2.0)
-    return "  spin %.2f  heat %.2f  letters %s" % (spin(t), heat, f"{letters:,}")
+    tilt = math.degrees(0.075 + 0.40 * smooth((t - 4.8) / 3.8))
+    return "  spin %.2f  heat %.2f  tilt %.1f°  letters %s" % (spin_phase(t), heat, tilt, f"{letters:,}")
 
 
 def draw(chars, t):
@@ -242,12 +211,14 @@ def draw(chars, t):
 def main():
     cols, rows = COLS, ROWS
     aspect = 0.90
+    geodesics = [trace_geodesic((i + 0.5) / 1800.0 * 20.0) for i in range(1800)]
+    table = lambda b: geodesics[min(1799, int(b / 20.0 * 1800))]
     start = time.perf_counter()
     step = 1.0 / FPS
 
     while True:
         t = time.perf_counter() - start
-        chars = frame(t, cols, rows, aspect)
+        chars = frame(t, cols, rows, aspect, table)
         draw(chars, t)
         time.sleep(max(0.0, step - (time.perf_counter() - start - t)))
 
@@ -258,5 +229,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         sys.stdout.write("\x1b[0m\n")
     finally:
-        print("나라님께")
+        print("Cheering for all the good things to come in your season,")
 `;
